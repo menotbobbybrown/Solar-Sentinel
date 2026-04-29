@@ -1,0 +1,101 @@
+- id: energy_guard_lock_washing_machine
+  alias: "Energy Guard: Lock Washing Machine"
+  trigger:
+    - platform: mqtt
+      topic: "home/appliances/washing_machine/lock"
+  action:
+    - service: >
+        {% if trigger.payload == 'LOCK' %}
+          switch.turn_off
+        {% else %}
+          switch.turn_on
+        {% endif %}
+      target:
+        entity_id: switch.washing_machine
+
+- id: energy_guard_lock_dishwasher
+  alias: "Energy Guard: Lock Dishwasher"
+  trigger:
+    - platform: mqtt
+      topic: "home/appliances/dishwasher/lock"
+  action:
+    - service: >
+        {% if trigger.payload == 'LOCK' %}
+          switch.turn_off
+        {% else %}
+          switch.turn_on
+        {% endif %}
+      target:
+        entity_id: switch.dishwasher
+
+- id: energy_guard_lock_water_heater
+  alias: "Energy Guard: Lock Water Heater"
+  trigger:
+    - platform: mqtt
+      topic: "home/appliances/water_heater/lock"
+  action:
+    - service: >
+        {% if trigger.payload == 'LOCK' %}
+          switch.turn_off
+        {% else %}
+          switch.turn_on
+        {% endif %}
+      target:
+        entity_id: switch.water_heater
+
+- id: energy_guard_lock_ac_unit
+  alias: "Energy Guard: Lock AC Unit"
+  trigger:
+    - platform: mqtt
+      topic: "home/appliances/ac_unit/lock"
+  action:
+    - service: >
+        {% if trigger.payload == 'LOCK' %}
+          switch.turn_off
+        {% else %}
+          switch.turn_on
+        {% endif %}
+      target:
+        entity_id: switch.ac_unit
+
+- id: energy_guard_lock_ev_charger
+  alias: "Energy Guard: Lock EV Charger"
+  trigger:
+    - platform: mqtt
+      topic: "home/appliances/ev_charger/lock"
+  action:
+    - service: >
+        {% if trigger.payload == 'LOCK' %}
+          switch.turn_off
+        {% else %}
+          switch.turn_on
+        {% endif %}
+      target:
+        entity_id: switch.ev_charger
+
+- id: energy_guard_alert_notification
+  alias: "Energy Guard: Alert Notification"
+  trigger:
+    - platform: mqtt
+      topic: "home/alerts/energy_guard"
+  action:
+    - service: notify.persistent_notification
+      data:
+        title: "Solar Sentinel: {{ value_json.priority | upper }}"
+        message: "{{ value_json.message }}"
+        notification_id: "energy_guard_alert"
+
+- id: energy_guard_abundance_notification
+  alias: "Energy Guard: Abundance Notification"
+  trigger:
+    - platform: mqtt
+      topic: "home/alerts/energy_guard"
+  condition:
+    - condition: template
+      value_template: "{{ 'ABUNDANCE' in value_json.message }}"
+  action:
+    - service: notify.persistent_notification
+      data:
+        title: "Energy Abundance Detected"
+        message: "Solar production is high and battery is full. Good time for laundry or EV charging!"
+        notification_id: "energy_abundance"
