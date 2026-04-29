@@ -1,0 +1,17 @@
+Solar-Sentinel-AIO Version Manifest
+Phase 4: Hermes Agent Layer
+
+Components:
+- ollama: v0.1.27
+- hermes-3-llama3.1:8b-q4_K_M
+- langchain: 0.1.6
+- langchain-community: 0.0.19
+- langchain-core: 0.1.23
+
+Other Core Services:
+- pvlib: 0.10.3
+- paho-mqtt: 1.6.1
+- influxdb-client: 3.0.0
+- homeassistant: latest (managed by supervisor)
+- node-red: latest (managed by supervisor)
+- uptime-kuma: latest (managed by supervisor)

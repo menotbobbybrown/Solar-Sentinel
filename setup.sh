@@ -16,6 +16,8 @@ DIRS=(
     "/data/scripts"
     "/data/logs"
     "/data/backups"
+    "/data/agent"
+    "/data/ollama/models"
 )
 
 for dir in "${DIRS[@]}"; do
@@ -69,6 +71,36 @@ fi
 if [ ! -d "/data/guard" ]; then
     echo "Initializing Energy Guard state directory..."
     mkdir -p /data/guard
+fi
+
+# Hermes Agent Setup
+if [ ! -f "/data/agent/hermes_history.json" ]; then
+    echo "[]" > /data/agent/hermes_history.json
+fi
+
+# Copy hermes_agent.py if it exists in the project source
+if [ -f "/home/engine/project/data/agent/hermes_agent.py" ]; then
+    cp /home/engine/project/data/agent/hermes_agent.py /data/agent/hermes_agent.py
+fi
+
+if [ -f "/data/agent/hermes_agent.py" ]; then
+    chmod +x /data/agent/hermes_agent.py
+fi
+
+# Ollama model pull (idempotent)
+if [ ! -d "/data/ollama/models/blobs" ]; then
+    echo "Pulling Ollama model hermes-3-llama3.1:8b-q4_K_M..."
+    OLLAMA_MODELS=/data/ollama/models /usr/local/bin/ollama serve &
+    OLLAMA_PID=$!
+    # Wait for Ollama to start
+    for i in {1..10}; do
+        if curl -s http://localhost:11434/api/tags > /dev/null; then
+            break
+        fi
+        sleep 2
+    done
+    OLLAMA_MODELS=/data/ollama/models /usr/local/bin/ollama pull hermes-3-llama3.1:8b-q4_K_M
+    kill $OLLAMA_PID
 fi
 
 # InfluxDB init (placeholder for more complex init)

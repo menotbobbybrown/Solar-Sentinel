@@ -63,5 +63,33 @@
         "maxRetries": 3,
         "notificationIDList": [],
         "tags": []
+    },
+    {
+        "id": 8,
+        "name": "Ollama Server",
+        "type": "http",
+        "url": "http://localhost:11434/api/tags",
+        "method": "GET",
+        "interval": 120,
+        "retryInterval": 60,
+        "resendInterval": 0,
+        "maxRetries": 3,
+        "notificationIDList": [],
+        "tags": [],
+        "keyword": "hermes"
+    },
+    {
+        "id": 9,
+        "name": "Hermes Agent Heartbeat",
+        "type": "mqtt",
+        "hostname": "localhost",
+        "port": 1883,
+        "topic": "home/hermes/status",
+        "interval": 300,
+        "retryInterval": 60,
+        "resendInterval": 0,
+        "maxRetries": 3,
+        "notificationIDList": [],
+        "tags": []
     }
 ]

@@ -49,28 +49,25 @@ RUN apk add --no-cache \
     libc6-compat \
     ca-certificates \
     util-linux \
-    smartmontools
+    smartmontools \
+    git
+
+# Install Ollama
+RUN curl -L https://ollama.com/download/ollama-linux-amd64 -o /usr/local/bin/ollama && chmod +x /usr/local/bin/ollama
 
 # Create non-root user
 RUN addgroup -S solar && adduser -S solar -G solar
 
 # Create necessary directories
-RUN mkdir -p /var/log/supervisor /etc/supervisor/conf.d /data /config /var/lib/influxdb2 /var/lib/grafana /mosquitto/data /mosquitto/log
+RUN mkdir -p /var/log/supervisor /etc/supervisor/conf.d /data /config /var/lib/influxdb2 /var/lib/grafana /mosquitto/data /mosquitto/log /data/ollama/models
+
+# Copy requirements.txt and install
+COPY requirements.txt /tmp/requirements.txt
+RUN pip3 install --no-cache-dir --break-system-packages homeassistant
+RUN pip3 install --no-cache-dir --break-system-packages --no-deps -r /tmp/requirements.txt
 
 # Copy supervisord config
 COPY supervisord.conf /etc/supervisor/supervisord.conf
-
-# Install Home Assistant and dependencies
-RUN pip3 install --no-cache-dir \
-    homeassistant \
-    pvlib==0.10.3 \
-    paho-mqtt==1.6.1 \
-    influxdb-client==3.0.0 \
-    requests \
-    schedule \
-    pytz \
-    pandas \
-    numpy
 
 # Install Node-RED
 ARG NODERED_VERSION=3.1.3
