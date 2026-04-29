@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  solar-sentinel:
+    build: .
+    image: solar-sentinel-aio:v3
+    container_name: solar-sentinel
+    ports:
+      - "8123:8123" # Home Assistant
+      - "8086:8086" # InfluxDB
+      - "3000:3000" # Grafana
+      - "1883:1883" # Mosquitto
+      - "1880:1880" # Node-RED
+      - "3001:3001" # Uptime Kuma
+      - "8080:8080" # Open-Meteo
+    volumes:
+      - ./data:/data
+    restart: unless-stopped

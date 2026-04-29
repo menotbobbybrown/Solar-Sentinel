@@ -1,0 +1,7 @@
+# InfluxDB 2.x configuration
+bolt-path: /data/influxdb/influxd.bolt
+engine-path: /data/influxdb/engine
+http-bind-address: :8086
+log-level: info
+query-concurrency: 10
+query-queue-size: 10

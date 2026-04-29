@@ -1,0 +1,21 @@
+# Data directories
+data/*
+!data/.gitkeep
+
+# Logs
+*.log
+/var/log/supervisor/*
+
+# Node.js
+node_modules/
+npm-debug.log
+
+# Python
+__pycache__/
+*.pyc
+
+# Docker
+.dockerignore
+
+# OS files
+.DS_Store

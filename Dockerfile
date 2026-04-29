@@ -1,0 +1,120 @@
+# Stage 1: Downloader
+FROM alpine:3.19 AS downloader
+RUN apk add --no-cache curl
+
+WORKDIR /downloads
+COPY scripts/validate-sha256.sh /usr/local/bin/validate-sha256.sh
+RUN chmod +x /usr/local/bin/validate-sha256.sh
+
+# Grafana 10.2.3
+ARG GRAFANA_VERSION=10.2.3
+ARG GRAFANA_SHA256=c686606a6975481f4f108de44c4df3465251e4ee2da20e7c6ee6b66e5bdcf2da
+RUN curl -fsSL https://dl.grafana.com/oss/release/grafana-${GRAFANA_VERSION}.linux-amd64.tar.gz -o grafana.tar.gz \
+    && /usr/local/bin/validate-sha256.sh grafana.tar.gz ${GRAFANA_SHA256}
+
+# InfluxDB 2.7.4
+ARG INFLUXDB_VERSION=2.7.4
+ARG INFLUXDB_SHA256=9343715d012497672807f43350257367f607c3970b55ed9969299ed301556948
+RUN curl -fsSL https://dl.influxdata.com/influxdb/releases/influxdb2-${INFLUXDB_VERSION}_linux_amd64.tar.gz -o influxdb.tar.gz \
+    && /usr/local/bin/validate-sha256.sh influxdb.tar.gz ${INFLUXDB_SHA256}
+
+# Stage 2: Build Open-Meteo
+FROM golang:1.21-alpine3.19 AS open-meteo-builder
+ARG OPEN_METEO_VERSION=1.2.1
+RUN apk add --no-cache git
+RUN git clone --branch v${OPEN_METEO_VERSION} https://github.com/open-meteo/open-meteo.git /src
+WORKDIR /src
+RUN go build -o /usr/local/bin/open-meteo .
+
+# Stage 3: Energy Guard (Custom Service)
+FROM alpine:3.19 AS energy-guard-builder
+WORKDIR /app
+RUN echo "#!/usr/bin/env python3" > energy-guard \
+    && echo "import time, json, sys" >> energy-guard \
+    && echo "print('Energy Guard starting...')" >> energy-guard \
+    && echo "while True: time.sleep(60)" >> energy-guard \
+    && chmod +x energy-guard
+
+# Stage 4: Final Image
+FROM alpine:3.19
+
+# Install runtime dependencies
+RUN apk add --no-cache \
+    python3 \
+    py3-pip \
+    nodejs \
+    npm \
+    mosquitto \
+    supervisor \
+    bash \
+    curl \
+    libc6-compat \
+    ca-certificates
+
+# Create non-root user
+RUN addgroup -S solar && adduser -S solar -G solar
+
+# Create necessary directories
+RUN mkdir -p /var/log/supervisor /etc/supervisor/conf.d /data /config /var/lib/influxdb2 /var/lib/grafana /mosquitto/data /mosquitto/log
+
+# Copy supervisord config
+COPY supervisord.conf /etc/supervisor/supervisord.conf
+
+# Install Home Assistant
+RUN pip3 install --no-cache-dir --no-deps homeassistant
+
+# Install Node-RED
+ARG NODERED_VERSION=3.1.3
+WORKDIR /usr/share/node-red
+RUN echo '{"dependencies": {"node-red": "'${NODERED_VERSION}'"}}' > package.json \
+    && npm install \
+    && npm ci --production \
+    && ln -s /usr/share/node-red/node_modules/.bin/node-red /usr/local/bin/node-red
+
+# Install Uptime Kuma
+ARG UPTIME_KUMA_VERSION=1.23.11
+WORKDIR /usr/share/uptime-kuma
+RUN curl -fsSL https://github.com/louislam/uptime-kuma/archive/refs/tags/${UPTIME_KUMA_VERSION}.tar.gz -o uptime-kuma.tar.gz \
+    && tar -xzf uptime-kuma.tar.gz --strip-components=1 \
+    && rm uptime-kuma.tar.gz \
+    && npm ci --production
+
+# Copy InfluxDB
+COPY --from=downloader /downloads/influxdb.tar.gz /tmp/influxdb.tar.gz
+RUN tar -xzf /tmp/influxdb.tar.gz -C /usr/local/bin --strip-components=1 \
+    && rm /tmp/influxdb.tar.gz
+
+# Install Grafana
+COPY --from=downloader /downloads/grafana.tar.gz /tmp/grafana.tar.gz
+RUN mkdir -p /usr/share/grafana \
+    && tar -xzf /tmp/grafana.tar.gz -C /usr/share/grafana --strip-components=1 \
+    && rm /tmp/grafana.tar.gz \
+    && ln -s /usr/share/grafana/bin/grafana-server /usr/local/bin/grafana-server
+
+# Copy Open-Meteo
+COPY --from=open-meteo-builder /usr/local/bin/open-meteo /usr/local/bin/open-meteo
+
+# Copy Energy Guard
+COPY --from=energy-guard-builder /app/energy-guard /usr/local/bin/energy-guard
+
+# Copy configurations and scripts
+COPY config/ /etc/
+COPY setup.sh /usr/local/bin/setup.sh
+COPY scripts/healthcheck.sh /usr/local/bin/healthcheck.sh
+COPY scripts/open-meteo-wrapper.sh /usr/local/bin/open-meteo-wrapper.sh
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/setup.sh /usr/local/bin/healthcheck.sh /usr/local/bin/entrypoint.sh /usr/local/bin/open-meteo-wrapper.sh
+
+# Symlink for Home Assistant
+RUN ln -s /etc/homeassistant /config/homeassistant
+
+# Set permissions
+RUN chown -R solar:solar /data /config /var/lib/influxdb2 /var/lib/grafana /mosquitto /var/log/supervisor
+
+# Expose ports
+EXPOSE 8123 8086 3000 1883 1880 3001 8080
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+  CMD /usr/local/bin/healthcheck.sh
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
