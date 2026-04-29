@@ -1,0 +1,8 @@
+pvlib==0.10.3
+requests
+paho-mqtt==1.6.1
+influxdb-client==3.0.0
+schedule
+pytz
+pandas
+numpy

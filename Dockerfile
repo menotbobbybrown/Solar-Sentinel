@@ -29,11 +29,8 @@ RUN go build -o /usr/local/bin/open-meteo .
 # Stage 3: Energy Guard (Custom Service)
 FROM alpine:3.19 AS energy-guard-builder
 WORKDIR /app
-RUN echo "#!/usr/bin/env python3" > energy-guard \
-    && echo "import time, json, sys" >> energy-guard \
-    && echo "print('Energy Guard starting...')" >> energy-guard \
-    && echo "while True: time.sleep(60)" >> energy-guard \
-    && chmod +x energy-guard
+COPY config/energy-guard/guard.py energy-guard
+RUN chmod +x energy-guard
 
 # Stage 4: Final Image
 FROM alpine:3.19
@@ -60,8 +57,17 @@ RUN mkdir -p /var/log/supervisor /etc/supervisor/conf.d /data /config /var/lib/i
 # Copy supervisord config
 COPY supervisord.conf /etc/supervisor/supervisord.conf
 
-# Install Home Assistant
-RUN pip3 install --no-cache-dir --no-deps homeassistant
+# Install Home Assistant and dependencies
+RUN pip3 install --no-cache-dir \
+    homeassistant \
+    pvlib==0.10.3 \
+    paho-mqtt==1.6.1 \
+    influxdb-client==3.0.0 \
+    requests \
+    schedule \
+    pytz \
+    pandas \
+    numpy
 
 # Install Node-RED
 ARG NODERED_VERSION=3.1.3
