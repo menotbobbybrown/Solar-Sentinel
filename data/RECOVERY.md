@@ -52,6 +52,16 @@ This guide covers scenarios for restoring the Solar-Sentinel-AIO system in case 
 - **Check Health:** `docker exec solar-sentinel /data/scripts/healthcheck.sh`
 
 ## First-Boot Checklist
-- Ensure `INFLUX_TOKEN` is set in your environment or `docker-compose.yml`.
-- Run `setup.sh` (usually automatic via entrypoint).
 - Verify USB drive is mounted and detected by running `/data/scripts/usb_backup.sh`.
+
+## Scenario 5: Ollama/Hermes recovery
+If Hermes is unresponsive or Ollama fails to load the model:
+1. Check Ollama status: `supervisorctl status ollama`
+2. Check Hermes logs: `tail -f /data/logs/hermes.log`
+3. Manually re-pull the model if needed:
+   `OLLAMA_MODELS=/data/ollama/models ollama pull hermes-3-llama3.1:8b-q4_K_M`
+4. Restart services:
+   `supervisorctl restart ollama`
+   `supervisorctl restart hermes-agent`
+
+Note: The model is stored in `/data/ollama/models`, which is a persistent volume and should survive container rebuilds.

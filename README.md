@@ -76,6 +76,25 @@ Ensure the following are set in your environment or `.env` file:
 - `LATITUDE` / `LONGITUDE`: For solar forecast accuracy.
 - `OPEN_METEO_URL`: URL for the weather service (default: `http://localhost:8080`).
 
+## Talking to Hermes
+Hermes is the natural language interface for Solar-Sentinel-AIO. You can interact with it using three methods:
+
+1. **Node-RED Chat UI:** Navigate to `http://localhost:1880/ui` and select the **Hermes AI Chat** tab.
+2. **MQTT Direct:** Publish a message to `home/hermes/inbox` and subscribe to `home/hermes/outbox`.
+3. **ntfy Webhook:** Hermes responses are also sent as push notifications via the configured ntfy topic.
+
+### Example Commands
+- *"Hermes, what is the current system status?"*
+- *"Lock the washing machine until further notice."*
+- *"What's the solar forecast for tomorrow?"*
+- *"Set the battery lockout threshold to 15%."*
+
+### Model Management
+Hermes uses the `hermes-3-llama3.1:8b-q4_K_M` model running on Ollama. 
+- The model unloads after 3 minutes of inactivity to save RAM (`OLLAMA_KEEP_ALIVE=3m`).
+- Check model status: `ollama ps`
+- Manual pull: `ollama pull hermes-3-llama3.1:8b-q4_K_M`
+
 ## Monitoring & Alerts
 - **MQTT**: Health metrics are published to `home/system/health_metrics`.
 - **ntfy**: Critical alerts are sent to `ntfy.sh/solar_sentinel_alerts`.
