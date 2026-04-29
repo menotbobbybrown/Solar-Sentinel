@@ -99,3 +99,48 @@
         title: "Energy Abundance Detected"
         message: "Solar production is high and battery is full. Good time for laundry or EV charging!"
         notification_id: "energy_abundance"
+
+- id: health_critical_alert
+  alias: "System: Health Critical Alert"
+  trigger:
+    - platform: mqtt
+      topic: "home/system/health_metrics"
+  condition:
+    - condition: template
+      value_template: "{{ value_json.status == 'CRITICAL' }}"
+  action:
+    - service: notify.persistent_notification
+      data:
+        title: "CRITICAL HEALTH ALERT"
+        message: "System health is CRITICAL: {{ value_json.metrics }}"
+        notification_id: "health_critical"
+
+- id: backup_success_notify
+  alias: "System: Backup Success Notify"
+  trigger:
+    - platform: mqtt
+      topic: "home/system/backup_status"
+  condition:
+    - condition: template
+      value_template: "{{ 'SUCCESS' in trigger.payload }}"
+  action:
+    - service: notify.persistent_notification
+      data:
+        title: "Backup Successful"
+        message: "{{ trigger.payload }}"
+        notification_id: "backup_status"
+
+- id: usb_missing_notify
+  alias: "System: USB Missing Notify"
+  trigger:
+    - platform: mqtt
+      topic: "home/system/backup_status"
+  condition:
+    - condition: template
+      value_template: "{{ 'NOT DETECTED' in trigger.payload or 'REMINDER' in trigger.payload }}"
+  action:
+    - service: notify.persistent_notification
+      data:
+        title: "USB Backup Warning"
+        message: "{{ trigger.payload }}"
+        notification_id: "usb_warning"

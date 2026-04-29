@@ -1,6 +1,9 @@
 # Data directories
 data/*
 !data/.gitkeep
+!data/scripts/
+!data/homeassistant-defaults/
+!data/RECOVERY.md
 
 # Logs
 *.log

@@ -13,6 +13,9 @@ DIRS=(
     "/data/mosquitto/log"
     "/data/node-red"
     "/data/uptime-kuma"
+    "/data/scripts"
+    "/data/logs"
+    "/data/backups"
 )
 
 for dir in "${DIRS[@]}"; do
@@ -21,6 +24,25 @@ for dir in "${DIRS[@]}"; do
         mkdir -p "$dir"
     fi
 done
+
+# Copy scripts from template to /data/scripts
+if [ -d "/usr/share/solar-sentinel/data/scripts" ]; then
+    cp -r /usr/share/solar-sentinel/data/scripts/* /data/scripts/
+fi
+
+# Copy RECOVERY.md
+if [ -f "/usr/share/solar-sentinel/data/RECOVERY.md" ]; then
+    cp /usr/share/solar-sentinel/data/RECOVERY.md /data/RECOVERY.md
+fi
+
+# Ensure all scripts are executable
+chmod +x /data/scripts/*.sh
+
+# Run cron setup
+if [ -f "/data/scripts/setup_cron.sh" ]; then
+    echo "Installing cron jobs..."
+    /data/scripts/setup_cron.sh
+fi
 
 # Set permissions
 chown -R solar:solar /data

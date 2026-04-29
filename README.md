@@ -1,76 +1,82 @@
 # Solar-Sentinel-AIO v3
 
-Phase 1 of Solar-Sentinel-AIO: a multi-stage Dockerfile with 8 services managed by supervisord.
+Advanced Energy Management & Backup System.
+
+## Phase 3: USB Backup + 20-Year Hardening
+This version includes comprehensive system hardening and a robust USB-based backup and recovery strategy designed for long-term reliability.
 
 ## Services Included
-1. **Home Assistant** (latest stable) - Smart home automation platform.
+1. **Home Assistant** - Smart home automation platform.
 2. **InfluxDB 2.7.4** - Time series database for energy metrics.
 3. **Grafana 10.2.3** - Visualization and dashboards.
-4. **Mosquitto 2.0.18** - MQTT broker for device communication.
-5. **Node-RED 3.1.3** - Flow-based programming for automation.
+4. **Mosquitto 2.0.18** - MQTT broker.
+5. **Node-RED 3.1.3** - Flow-based automation.
 6. **Uptime Kuma 1.23.11** - Monitoring and uptime checks.
 7. **Open-Meteo v1.2.1** - Self-hosted weather API.
 8. **Energy Guard** - Custom energy monitoring and protection service.
 
-## Architecture
-- **Base Image**: Alpine 3.19
-- **Service Manager**: supervisord
-- **Build**: Multi-stage Docker build with SHA256 verification (where applicable).
-- **Configuration**: All configurations are stored in `/etc/` and symlinked or copied as needed.
-- **Persistence**: Data is stored in `/data/`.
+## Operational Guide
 
-## Phase 2: Predictive Energy Guard Brain
-The Energy Guard Brain is a predictive decision engine that analyzes solar forecasts and battery state to protect energy reserves.
+### Maintenance Scripts
+All maintenance scripts are located in `/data/scripts/`:
 
-### Dashboards & URLs
-- **Node-RED Dashboard**: [http://localhost:1880/ui](http://localhost:1880/ui)
-- **Home Assistant**: [http://localhost:8123](http://localhost:8123)
-- **Grafana**: [http://localhost:3000](http://localhost:3000)
-- **Uptime Kuma**: [http://localhost:3001](http://localhost:3001)
-- **Open-Meteo API**: [http://localhost:8080](http://localhost:8080)
+| Script | Description |
+|--------|-------------|
+| `usb_backup.sh` | Auto-detects USB, creates compressed backup of `/data`, rotates last 8 backups. |
+| `healthcheck.sh` | Monitors SSD SMART status, disk usage, service health, and data freshness. |
+| `usb_reminder.sh` | Notifies via ntfy if no backup has been performed in the last 8 days. |
+| `setup_cron.sh` | Idempotently installs the system maintenance schedule. |
+| `laptop_hardening.sh` | **(Host Only)** Hardens Ubuntu host for 24/7 solar sentinel operation. |
 
-### Alerts & Notifications (ntfy)
-To receive mobile notifications:
-1. Install the **ntfy** app on your phone.
-2. Subscribe to the topic: `solar_sentinel_guard` (or your configured `NTFY_TOPIC`).
-3. Ensure the `NTFY_SERVER` and `NTFY_TOPIC` environment variables are correctly set in your environment.
+### Cron Schedule
+Maintenance is automated via the following schedule:
 
-### Threshold Configuration
-Thresholds can be adjusted live via the **Live Threshold Editor** flow in Node-RED:
-- **WARN threshold**: Daily solar forecast below this triggers an ADVISORY. (Default: 2.5 kWh)
-- **CRIT threshold**: Daily solar forecast below this + low battery triggers a WARNING. (Default: 1.5 kWh)
-- **LOCKOUT threshold**: Minimum allowed daily yield before total appliance lockout. (Default: 0.8 kWh)
-- **Storm battery target**: Target SOC to maintain when bad weather is detected. (Default: 95%)
+| Task | Schedule | Command |
+|------|----------|---------|
+| USB Backup | Weekly (Sun 02:00) | `usb_backup.sh` |
+| Health Check | Weekly (Sun 01:00) | `healthcheck.sh` (via supervisor) |
+| InfluxDB Snapshot | Daily (03:00) | `influx backup` |
+| Prune Snapshots | Daily (03:30) | Delete snapshots > 30 days |
+| Log Rotation | Monthly (1st 04:00) | Truncate all `.log` files |
+| USB Reminder | Weekly (Mon 09:00) | `usb_reminder.sh` |
 
-### First-Boot Checklist
-1. Verify all containers are running: `docker-compose ps`.
-2. Access Node-RED and verify the flows are imported correctly.
-3. Check `/data/logs/guard.log` to ensure the Energy Guard Brain has started and connected to MQTT/InfluxDB.
-4. Set your `LATITUDE` and `LONGITUDE` in the environment variables for accurate solar forecasts.
+## Host Hardening (20-Year Hardening)
+To prepare a new laptop host for 24/7 operation:
+1. Copy `/data/scripts/laptop_hardening.sh` to the host.
+2. Run as root: `sudo bash laptop_hardening.sh`.
+3. This will disable sleep/suspend, ignore lid close, disable swap, set timezone (Asia/Dubai), and configure unattended-upgrades.
+
+## Disaster Recovery
+See `/data/RECOVERY.md` for full details.
+
+### Quick Restore Reference
+1. Prepare host with `laptop_hardening.sh`.
+2. Install Docker.
+3. Plug in USB backup.
+4. Restore data: `tar -xzf /path/to/usb/solar_sentinel_backups/backup_xxxx.tar.gz -C /`
+5. Restart: `docker-compose up -d`
+
+## Configuration
 
 ### Port Map
-| Service | Port |
-|---------|------|
-| Home Assistant | 8123 |
-| InfluxDB | 8086 |
-| Grafana | 3000 |
-| Mosquitto | 1883 |
-| Node-RED | 1880 |
-| Uptime Kuma | 3001 |
-| Open-Meteo | 8080 |
+| Service | Port | External URL |
+|---------|------|--------------|
+| Home Assistant | 8123 | http://localhost:8123 |
+| InfluxDB | 8086 | http://localhost:8086 |
+| Grafana | 3000 | http://localhost:3000 |
+| Mosquitto | 1883 | localhost:1883 |
+| Node-RED | 1880 | http://localhost:1880 |
+| Uptime Kuma | 3001 | http://localhost:3001 |
+| Open-Meteo | 8080 | http://localhost:8080 |
 
-## Usage
-### Build
-```bash
-docker build -t solar-sentinel-aio:v3 .
-```
+### Environment Variables (First-Boot Checklist)
+Ensure the following are set in your environment or `.env` file:
+- `INFLUX_TOKEN`: Administrative token for InfluxDB.
+- `NTFY_TOPIC`: Topic for ntfy alerts (default: `solar_sentinel_alerts`).
+- `LATITUDE` / `LONGITUDE`: For solar forecast accuracy.
+- `OPEN_METEO_URL`: URL for the weather service (default: `http://localhost:8080`).
 
-### Run
-```bash
-docker-compose up -d
-```
-
-## Security
-- Services run as a non-root user `solar` where possible.
-- Minimal Alpine-based image.
-- Version pinning for all major components.
+## Monitoring & Alerts
+- **MQTT**: Health metrics are published to `home/system/health_metrics`.
+- **ntfy**: Critical alerts are sent to `ntfy.sh/solar_sentinel_alerts`.
+- **Logs**: Detailed logs available in `/data/logs/`.

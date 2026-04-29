@@ -42,11 +42,14 @@ RUN apk add --no-cache \
     nodejs \
     npm \
     mosquitto \
+    mosquitto-clients \
     supervisor \
     bash \
     curl \
     libc6-compat \
-    ca-certificates
+    ca-certificates \
+    util-linux \
+    smartmontools
 
 # Create non-root user
 RUN addgroup -S solar && adduser -S solar -G solar
@@ -106,10 +109,11 @@ COPY --from=energy-guard-builder /app/energy-guard /usr/local/bin/energy-guard
 # Copy configurations and scripts
 COPY config/ /etc/
 COPY setup.sh /usr/local/bin/setup.sh
-COPY scripts/healthcheck.sh /usr/local/bin/healthcheck.sh
-COPY scripts/open-meteo-wrapper.sh /usr/local/bin/open-meteo-wrapper.sh
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/setup.sh /usr/local/bin/healthcheck.sh /usr/local/bin/entrypoint.sh /usr/local/bin/open-meteo-wrapper.sh
+COPY scripts/ /usr/local/bin/
+COPY data/ /usr/share/solar-sentinel/data/
+
+RUN chmod +x /usr/local/bin/setup.sh /usr/local/bin/entrypoint.sh /usr/local/bin/*.sh
 
 # Symlink for Home Assistant
 RUN ln -s /etc/homeassistant /config/homeassistant
