@@ -30,5 +30,5 @@ fi
 
 if [ "$REMIND" = true ]; then
     curl -s -d "USB Backup Reminder: $REASON Please ensure USB is plugged and backup is running." ntfy.sh/solar_sentinel_alerts > /dev/null 2>&1 || true
-    mosquitto_pub -h localhost -t home/system/backup_status -m "REMINDER: $REASON" 2>/dev/null || true
+    mosquitto_pub -h localhost -t solar/system/backup_status -m "REMINDER: $REASON" 2>/dev/null || true
 fi

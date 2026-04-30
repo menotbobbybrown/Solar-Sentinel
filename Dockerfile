@@ -37,24 +37,23 @@ FROM alpine:3.19
 
 # Install runtime dependencies
 RUN apk add --no-cache \
-    python3 \
-    py3-pip \
-    nodejs \
-    npm \
-    mosquitto \
-    mosquitto-clients \
-    supervisor \
-    bash \
-    curl \
-    libc6-compat \
-    ca-certificates \
-    util-linux \
-    smartmontools \
-    git
+    python3=~3.11 \
+    py3-pip=~23.3 \
+    nodejs=~20.12 \
+    npm=~10.2 \
+    mosquitto=~2.0 \
+    mosquitto-clients=~2.0 \
+    supervisor=~4.2 \
+    bash=~5.2 \
+    curl=~8.5 \
+    libc6-compat=~1.2 \
+    ca-certificates=~20230506 \
+    util-linux=~2.39 \
+    smartmontools=~7.4 \
+    git=~2.43
 
 # Install Ollama v0.1.27
 ARG OLLAMA_VERSION=0.1.27
-ARG OLLAMA_SHA256=a83a32e2fc0c45b8b7bdf6cf7ca56d8c4e13e7e1c8f1a3e7c8d9e7c8d9e7c8
 RUN curl -L https://github.com/ollama/ollama/releases/download/v${OLLAMA_VERSION}/ollama-linux-amd64 -o /usr/local/bin/ollama \
     && chmod +x /usr/local/bin/ollama
 
