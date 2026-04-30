@@ -84,7 +84,7 @@
         "type": "mqtt",
         "hostname": "localhost",
         "port": 1883,
-        "topic": "home/hermes/status",
+        "topic": "solar/hermes/status",
         "interval": 300,
         "retryInterval": 60,
         "resendInterval": 0,

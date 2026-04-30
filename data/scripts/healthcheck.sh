@@ -90,9 +90,6 @@ MQTT_PAYLOAD="{\"status\": \"$STATUS\", \"metrics\": \"$MSG_JOINED\", \"timestam
 # Publish health_metrics to MQTT (standardized topic)
 mosquitto_pub -h localhost -t solar/system/health_metrics -m "$MQTT_PAYLOAD" 2>/dev/null || true
 
-# Also publish to old topic for backwards compatibility
-mosquitto_pub -h localhost -t home/system/health_metrics -m "$MQTT_PAYLOAD" 2>/dev/null || true
-
 # Send ntfy alerts on errors/warnings
 if [ "$STATUS" != "OK" ]; then
     log "$STATUS: $MSG_JOINED"
