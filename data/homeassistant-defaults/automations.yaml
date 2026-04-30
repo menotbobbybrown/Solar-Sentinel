@@ -2,7 +2,7 @@
   alias: "System: Health Critical Alert"
   trigger:
     - platform: mqtt
-      topic: "home/system/health_metrics"
+      topic: "solar/system/health_metrics"
   condition:
     - condition: template
       value_template: "{{ value_json.status == 'CRITICAL' }}"
@@ -17,7 +17,7 @@
   alias: "System: Backup Success Notify"
   trigger:
     - platform: mqtt
-      topic: "home/system/backup_status"
+      topic: "solar/system/backup_status"
   condition:
     - condition: template
       value_template: "{{ 'SUCCESS' in trigger.payload }}"
@@ -32,7 +32,7 @@
   alias: "System: USB Missing Notify"
   trigger:
     - platform: mqtt
-      topic: "home/system/backup_status"
+      topic: "solar/system/backup_status"
   condition:
     - condition: template
       value_template: "{{ 'NOT DETECTED' in trigger.payload or 'REMINDER' in trigger.payload }}"

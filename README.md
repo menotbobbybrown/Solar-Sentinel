@@ -80,7 +80,7 @@ Ensure the following are set in your environment or `.env` file:
 Hermes is the natural language interface for Solar-Sentinel-AIO. You can interact with it using three methods:
 
 1. **Node-RED Chat UI:** Navigate to `http://localhost:1880/ui` and select the **Hermes AI Chat** tab.
-2. **MQTT Direct:** Publish a message to `home/hermes/inbox` and subscribe to `home/hermes/outbox`.
+2. **MQTT Direct:** Publish a message to `solar/hermes/inbox` and subscribe to `solar/hermes/outbox`.
 3. **ntfy Webhook:** Hermes responses are also sent as push notifications via the configured ntfy topic.
 
 ### Example Commands
@@ -96,6 +96,6 @@ Hermes uses the `hermes-3-llama3.1:8b-q4_K_M` model running on Ollama.
 - Manual pull: `ollama pull hermes-3-llama3.1:8b-q4_K_M`
 
 ## Monitoring & Alerts
-- **MQTT**: Health metrics are published to `home/system/health_metrics`.
+- **MQTT**: Health metrics are published to `solar/system/health_metrics`.
 - **ntfy**: Critical alerts are sent to `ntfy.sh/solar_sentinel_alerts`.
 - **Logs**: Detailed logs available in `/data/logs/`.
