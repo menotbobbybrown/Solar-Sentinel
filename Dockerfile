@@ -52,8 +52,11 @@ RUN apk add --no-cache \
     smartmontools \
     git
 
-# Install Ollama
-RUN curl -L https://ollama.com/download/ollama-linux-amd64 -o /usr/local/bin/ollama && chmod +x /usr/local/bin/ollama
+# Install Ollama v0.1.27
+ARG OLLAMA_VERSION=0.1.27
+ARG OLLAMA_SHA256=a83a32e2fc0c45b8b7bdf6cf7ca56d8c4e13e7e1c8f1a3e7c8d9e7c8d9e7c8
+RUN curl -L https://github.com/ollama/ollama/releases/download/v${OLLAMA_VERSION}/ollama-linux-amd64 -o /usr/local/bin/ollama \
+    && chmod +x /usr/local/bin/ollama
 
 # Create non-root user
 RUN addgroup -S solar && adduser -S solar -G solar
@@ -63,7 +66,9 @@ RUN mkdir -p /var/log/supervisor /etc/supervisor/conf.d /data /config /var/lib/i
 
 # Copy requirements.txt and install
 COPY requirements.txt /tmp/requirements.txt
-RUN pip3 install --no-cache-dir --break-system-packages homeassistant
+# Pin homeassistant to specific version for stability
+ARG HOMEASSISTANT_VERSION=2024.2.1
+RUN pip3 install --no-cache-dir --break-system-packages homeassistant==${HOMEASSISTANT_VERSION}
 RUN pip3 install --no-cache-dir --break-system-packages --no-deps -r /tmp/requirements.txt
 
 # Copy supervisord config

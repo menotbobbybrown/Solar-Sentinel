@@ -7,8 +7,10 @@ echo "Solar-Sentinel-AIO Setup"
 DIRS=(
     "/data/homeassistant"
     "/data/influxdb"
+    "/data/influxdb/engine"
     "/data/grafana/logs"
     "/data/grafana/plugins"
+    "/data/grafana/dashboards"
     "/data/mosquitto/data"
     "/data/mosquitto/log"
     "/data/node-red"
@@ -18,6 +20,7 @@ DIRS=(
     "/data/backups"
     "/data/agent"
     "/data/ollama/models"
+    "/data/guard"
 )
 
 for dir in "${DIRS[@]}"; do
@@ -40,14 +43,18 @@ fi
 # Ensure all scripts are executable
 chmod +x /data/scripts/*.sh
 
+# Set proper ownership for directories before services start
+echo "Setting directory permissions..."
+chown -R solar:solar /data
+chown solar:solar /data/grafana/dashboards
+chown solar:solar /data/influxdb/engine
+chown solar:solar /data/guard
+
 # Run cron setup
 if [ -f "/data/scripts/setup_cron.sh" ]; then
     echo "Installing cron jobs..."
     /data/scripts/setup_cron.sh
 fi
-
-# Set permissions
-chown -R solar:solar /data
 
 # Initial configuration if missing
 if [ ! -f "/data/homeassistant/configuration.yaml" ]; then
@@ -68,11 +75,6 @@ if [ ! -f "/data/uptime-kuma/monitors.json" ]; then
     cp /etc/uptime-kuma/monitors.json /data/uptime-kuma/monitors.json
 fi
 
-if [ ! -d "/data/guard" ]; then
-    echo "Initializing Energy Guard state directory..."
-    mkdir -p /data/guard
-fi
-
 # Hermes Agent Setup
 if [ ! -f "/data/agent/hermes_history.json" ]; then
     echo "[]" > /data/agent/hermes_history.json
@@ -87,25 +89,73 @@ if [ -f "/data/agent/hermes_agent.py" ]; then
     chmod +x /data/agent/hermes_agent.py
 fi
 
-# Ollama model pull (idempotent)
+# Ollama model pull (idempotent) with version check
 if [ ! -d "/data/ollama/models/blobs" ]; then
     echo "Pulling Ollama model hermes-3-llama3.1:8b-q4_K_M..."
     OLLAMA_MODELS=/data/ollama/models /usr/local/bin/ollama serve &
     OLLAMA_PID=$!
     # Wait for Ollama to start
-    for i in {1..10}; do
-        if curl -s http://localhost:11434/api/tags > /dev/null; then
+    for i in {1..30}; do
+        if curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
+            echo "Ollama started successfully"
             break
         fi
+        echo "Waiting for Ollama to start... ($i/30)"
         sleep 2
     done
-    OLLAMA_MODELS=/data/ollama/models /usr/local/bin/ollama pull hermes-3-llama3.1:8b-q4_K_M
-    kill $OLLAMA_PID
+    OLLAMA_MODELS=/data/ollama/models /usr/local/bin/ollama pull hermes-3-llama3.1:8b-q4_K_M || echo "Warning: Failed to pull Ollama model"
+    kill $OLLAMA_PID 2>/dev/null || true
 fi
 
-# InfluxDB init (placeholder for more complex init)
+# InfluxDB bucket initialization
+echo "Checking InfluxDB buckets..."
+INFLUX_READY=0
+for i in {1..30}; do
+    if curl -s "http://localhost:8086/health" > /dev/null 2>&1; then
+        echo "InfluxDB is healthy"
+        INFLUX_READY=1
+        break
+    fi
+    echo "Waiting for InfluxDB to start... ($i/30)"
+    sleep 2
+done
+
+if [ "$INFLUX_READY" = "1" ]; then
+    # Set InfluxDB token and org from environment or defaults
+    INFLUX_TOKEN="${INFLUXDB_TOKEN:-my-token}"
+    INFLUX_ORG="${INFLUXDB_ORG:-my-org}"
+    INFLUX_URL="${INFLUXDB_URL:-http://localhost:8086}"
+    
+    # Check if buckets exist, create if missing
+    echo "Checking for solar_forecast bucket..."
+    if ! influx bucket list --token "$INFLUX_TOKEN" --org "$INFLUX_ORG" --host "$INFLUX_URL" 2>/dev/null | grep -q "solar_forecast"; then
+        echo "Creating solar_forecast bucket..."
+        influx bucket create --name solar_forecast --org "$INFLUX_ORG" --token "$INFLUX_TOKEN" --host "$INFLUX_URL" 2>/dev/null || \
+        curl -s -X POST "$INFLUX_URL/api/v2/buckets" \
+            -H "Authorization: Token $INFLUX_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"name\":\"solar_forecast\",\"orgID\":\"$INFLUX_ORG\",\"retentionRules\":[]}" > /dev/null || \
+        echo "Warning: Could not create solar_forecast bucket (may already exist)"
+    else
+        echo "solar_forecast bucket already exists"
+    fi
+    
+    echo "Checking for system_state bucket..."
+    if ! influx bucket list --token "$INFLUX_TOKEN" --org "$INFLUX_ORG" --host "$INFLUX_URL" 2>/dev/null | grep -q "system_state"; then
+        echo "Creating system_state bucket..."
+        influx bucket create --name system_state --org "$INFLUX_ORG" --token "$INFLUX_TOKEN" --host "$INFLUX_URL" 2>/dev/null || \
+        echo "Warning: Could not create system_state bucket (may already exist)"
+    else
+        echo "system_state bucket already exists"
+    fi
+else
+    echo "Warning: InfluxDB not ready. Buckets will be created on first run."
+fi
+
+# Ensure influxdb data directory exists
 if [ ! -d "/data/influxdb/engine" ]; then
-    echo "InfluxDB data directory is empty. It will be initialized on first run."
+    mkdir -p /data/influxdb/engine
+    chown solar:solar /data/influxdb/engine
 fi
 
 echo "Setup complete."

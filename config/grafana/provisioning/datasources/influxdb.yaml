@@ -1,0 +1,38 @@
+# Grafana InfluxDB Datasource Provisioning
+# This file auto-configures the InfluxDB 2.x connection
+
+apiVersion: 1
+
+datasources:
+  - name: InfluxDB_Solar
+    type: influxdb
+    access: proxy
+    url: ${INFLUXDB_URL:http://localhost:8086}
+    isDefault: true
+    editable: true
+    jsonData:
+      version: Flux
+      organization: ${INFLUXDB_ORG:my-org}
+      defaultBucket: solar_forecast
+      tlsSkipVerify: false
+    secureJsonData:
+      token: ${INFLUXDB_TOKEN:my-token}
+    # Fallback for InfluxDB 1.x compatibility
+    database: solar
+    databaseUser: ${INFLUXDB_USER:admin}
+    secureJsonData:
+      password: ${INFLUXDB_PASSWORD:admin}
+
+  - name: InfluxDB_State
+    type: influxdb
+    access: proxy
+    url: ${INFLUXDB_URL:http://localhost:8086}
+    isDefault: false
+    editable: true
+    jsonData:
+      version: Flux
+      organization: ${INFLUXDB_ORG:my-org}
+      defaultBucket: system_state
+      tlsSkipVerify: false
+    secureJsonData:
+      token: ${INFLUXDB_TOKEN:my-token}
