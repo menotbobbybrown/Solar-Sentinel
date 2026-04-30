@@ -7,7 +7,6 @@ services:
     container_name: solar-sentinel
     ports:
       - "8123:8123" # Home Assistant
-      - "8086:8086" # InfluxDB
       - "3000:3000" # Grafana
       - "1883:1883" # Mosquitto
       - "1880:1880" # Node-RED

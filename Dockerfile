@@ -37,23 +37,25 @@ FROM alpine:3.19
 
 # Install runtime dependencies
 RUN apk add --no-cache \
-    python3 \
-    py3-pip \
-    nodejs \
-    npm \
-    mosquitto \
-    mosquitto-clients \
-    supervisor \
-    bash \
-    curl \
-    libc6-compat \
-    ca-certificates \
-    util-linux \
-    smartmontools \
-    git
+    python3=~3.11 \
+    py3-pip=~23.3 \
+    nodejs=~20.12 \
+    npm=~10.2 \
+    mosquitto=~2.0 \
+    mosquitto-clients=~2.0 \
+    supervisor=~4.2 \
+    bash=~5.2 \
+    curl=~8.5 \
+    libc6-compat=~1.2 \
+    ca-certificates=~20230506 \
+    util-linux=~2.39 \
+    smartmontools=~7.4 \
+    git=~2.43
 
-# Install Ollama
-RUN curl -L https://ollama.com/download/ollama-linux-amd64 -o /usr/local/bin/ollama && chmod +x /usr/local/bin/ollama
+# Install Ollama v0.1.27
+ARG OLLAMA_VERSION=0.1.27
+RUN curl -L https://github.com/ollama/ollama/releases/download/v${OLLAMA_VERSION}/ollama-linux-amd64 -o /usr/local/bin/ollama \
+    && chmod +x /usr/local/bin/ollama
 
 # Create non-root user
 RUN addgroup -S solar && adduser -S solar -G solar
@@ -63,7 +65,9 @@ RUN mkdir -p /var/log/supervisor /etc/supervisor/conf.d /data /config /var/lib/i
 
 # Copy requirements.txt and install
 COPY requirements.txt /tmp/requirements.txt
-RUN pip3 install --no-cache-dir --break-system-packages homeassistant
+# Pin homeassistant to specific version for stability
+ARG HOMEASSISTANT_VERSION=2024.2.1
+RUN pip3 install --no-cache-dir --break-system-packages homeassistant==${HOMEASSISTANT_VERSION}
 RUN pip3 install --no-cache-dir --break-system-packages --no-deps -r /tmp/requirements.txt
 
 # Copy supervisord config

@@ -49,6 +49,10 @@ SOC_WARNING = float(os.getenv("SOC_WARNING", 40.0))
 SOC_ADVISORY = float(os.getenv("SOC_ADVISORY", 60.0))
 SOC_ABUNDANCE = float(os.getenv("SOC_ABUNDANCE", 90.0))
 
+# Hysteresis offsets to prevent state flapping
+SOC_HYSTERESIS = 2.0
+POWER_HYSTERESIS = 100
+
 # --- Section B: RotatingFileHandler logging ---
 LOG_FILE = "/data/logs/guard.log"
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
@@ -69,6 +73,10 @@ state = {
     "current_watts": 0.0,
     "current_tier": "NOMINAL",
     "last_alert_tier": None,
+    "previous_tier": None,
+    "hysteresis_soc_offset": 0.0,
+    "hysteresis_power_offset": 0.0,
+    "forecast_3h_avg": 0.0,
     "config": {
         "soc_lockout": SOC_LOCKOUT,
         "soc_warning": SOC_WARNING,
@@ -99,6 +107,19 @@ def save_state():
         logger.error(f"Error saving state: {e}")
 
 # --- Section D: MQTT Connection with retry loop ---
+# Standardized MQTT Topics (solar/ namespace)
+MQTT_TOPICS = {
+    "battery_soc": "solar/battery/soc",
+    "pv_power": "solar/pv/power",
+    "guard_status": "solar/guard/status",
+    "guard_config": "solar/guard/config/",
+    "guard_command": "solar/guard/command",
+    "forecast_7day": "solar/forecast/7day",
+    "alerts_guard": "solar/alerts/guard",
+    "hermes_inbox": "solar/hermes/inbox",
+    "hermes_outbox": "solar/hermes/outbox",
+}
+
 mqtt_client = mqtt.Client(client_id="solar_guard")
 if MQTT_USER and MQTT_PASS:
     mqtt_client.username_pw_set(MQTT_USER, MQTT_PASS)
@@ -106,11 +127,11 @@ if MQTT_USER and MQTT_PASS:
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
         logger.info("Connected to MQTT Broker")
-        client.subscribe("home/battery/soc")
-        client.subscribe("home/panels/total_w")
-        client.subscribe("home/guard/config/#")
-        client.subscribe("home/guard/command")
-        client.publish("home/guard/status", "ONLINE", retain=True)
+        client.subscribe(MQTT_TOPICS["battery_soc"])
+        client.subscribe(MQTT_TOPICS["pv_power"])
+        client.subscribe(MQTT_TOPICS["guard_config"] + "#")
+        client.subscribe(MQTT_TOPICS["guard_command"])
+        client.publish(MQTT_TOPICS["guard_status"], "ONLINE", retain=True)
     else:
         logger.error(f"Failed to connect to MQTT, return code {rc}")
 
@@ -118,16 +139,16 @@ def on_message(client, userdata, msg):
     global state
     try:
         payload = msg.payload.decode()
-        if msg.topic == "home/battery/soc":
+        if msg.topic == MQTT_TOPICS["battery_soc"]:
             state["current_soc"] = float(payload)
-        elif msg.topic == "home/panels/total_w":
+        elif msg.topic == MQTT_TOPICS["pv_power"]:
             state["current_watts"] = float(payload)
-        elif msg.topic.startswith("home/guard/config/"):
+        elif msg.topic.startswith(MQTT_TOPICS["guard_config"]):
             key = msg.topic.split("/")[-1]
             state["config"][key] = float(payload)
             save_state()
             logger.info(f"Updated config {key} to {payload}")
-        elif msg.topic == "home/guard/command":
+        elif msg.topic == MQTT_TOPICS["guard_command"]:
             if payload == "FORCE_FORECAST":
                 update_forecast()
             elif payload == "FORCE_DECISION":
@@ -137,7 +158,7 @@ def on_message(client, userdata, msg):
 
 mqtt_client.on_connect = on_connect
 mqtt_client.on_message = on_message
-mqtt_client.will_set("home/guard/status", "OFFLINE", retain=True)
+mqtt_client.will_set(MQTT_TOPICS["guard_status"], "OFFLINE", retain=True)
 
 def mqtt_thread_func():
     while True:
@@ -164,10 +185,15 @@ def init_influx():
             time.sleep(10)
 
 # --- Section F: Weather + Solar Forecast Engine ---
-DUBAI_CLOUD_COVER = {
-    1: 25, 2: 28, 3: 31, 4: 28, 5: 15, 6: 10,
-    7: 15, 8: 18, 9: 12, 10: 15, 11: 18, 12: 22
-}
+# Statistical fallback based on configured latitude/longitude region
+def get_seasonal_cloud_cover(month):
+    """Return typical cloud cover percentage based on month.
+    Calibrated for Middle East/Mediterranean climate patterns."""
+    cloud_cover_by_month = {
+        1: 25, 2: 28, 3: 31, 4: 28, 5: 15, 6: 10,
+        7: 15, 8: 18, 9: 12, 10: 15, 11: 18, 12: 22
+    }
+    return cloud_cover_by_month.get(month, 20)
 
 def get_weather_forecast():
     # Local Open-Meteo
@@ -186,8 +212,8 @@ def get_weather_forecast():
     except:
         pass
 
-    # Statistical fallback
-    logger.warning("Using statistical fallback for weather")
+    # Statistical fallback using configured LATITUDE and LONGITUDE
+    logger.warning("Using statistical fallback for weather based on location: %.4f, %.4f", LATITUDE, LONGITUDE)
     now = datetime.now(pytz.timezone(TIMEZONE))
     hourly_times = []
     cloud_covers = []
@@ -195,7 +221,7 @@ def get_weather_forecast():
     for i in range(168):
         dt = now + timedelta(hours=i)
         hourly_times.append(dt.strftime("%Y-%m-%dT%H:00"))
-        cloud_covers.append(DUBAI_CLOUD_COVER[dt.month])
+        cloud_covers.append(get_seasonal_cloud_cover(dt.month))
         temps.append(30.0)
     return {"hourly": {"time": hourly_times, "cloudcover": cloud_covers, "temperature_2m": temps}}
 
@@ -216,6 +242,7 @@ def update_forecast():
         
         forecast_data = []
         total_yield_7day = 0
+        first_3h_power = []
         
         for i in range(len(times)):
             ghi = clearsky['ghi'].iloc[i]
@@ -231,6 +258,8 @@ def update_forecast():
             power = max(0, power)
             
             total_yield_7day += power # Watt-hours if hourly
+            if i < 3:
+                first_3h_power.append(power)
             
             point = Point("solar_forecast") \
                 .time(times[i], WritePrecision.NS) \
@@ -242,49 +271,148 @@ def update_forecast():
             write_api.write(bucket=INFLUXDB_BUCKET_FORECAST, record=forecast_data)
             logger.info(f"Written {len(forecast_data)} forecast points to InfluxDB")
         
-        mqtt_client.publish("home/forecast/7day", round(total_yield_7day / 1000.0, 2))
+        state["forecast_3h_avg"] = sum(first_3h_power) / len(first_3h_power) if first_3h_power else 0.0
+        logger.info(f"3-hour solar forecast average: {state['forecast_3h_avg']:.0f}W")
+        
+        mqtt_client.publish(MQTT_TOPICS["forecast_7day"], round(total_yield_7day / 1000.0, 2))
     except Exception as e:
         logger.error(f"Error in forecast engine: {e}")
 
-# --- Section G: Decision Engine ---
+# --- Section G: Decision Engine with Hysteresis ---
 def run_decision_engine():
     global state
     soc = state["current_soc"]
     watts = state["current_watts"]
     cfg = state["config"]
+    current_tier = state["current_tier"]
+    forecast_avg = state.get("forecast_3h_avg", 0.0)
+    
+    # Forecast bonus: if we expect >1000W on average, we can be 5% more lenient with SOC thresholds
+    forecast_bonus = 5.0 if forecast_avg > 1000 else 0.0
     
     new_tier = "NOMINAL"
+    hysteresis_soc = state.get("hysteresis_soc_offset", 0.0)
+    hysteresis_power = state.get("hysteresis_power_offset", 0.0)
     
-    if soc < cfg.get("soc_lockout", SOC_LOCKOUT):
-        new_tier = "LOCKOUT"
-    elif soc < cfg.get("soc_warning", SOC_WARNING):
-        new_tier = "WARNING"
-    elif soc < cfg.get("soc_advisory", SOC_ADVISORY):
-        new_tier = "ADVISORY"
-    elif soc > cfg.get("soc_abundance", SOC_ABUNDANCE) and watts > 2000:
-        new_tier = "ABUNDANCE"
+    # Apply hysteresis for exiting LOCKOUT state (need SOC to rise above threshold + hysteresis)
+    lockout_threshold = cfg.get("soc_lockout", SOC_LOCKOUT) + SOC_HYSTERESIS - forecast_bonus
+    warning_threshold = cfg.get("soc_warning", SOC_WARNING) + SOC_HYSTERESIS - forecast_bonus
+    advisory_threshold = cfg.get("soc_advisory", SOC_ADVISORY) + SOC_HYSTERESIS - forecast_bonus
+    abundance_threshold = cfg.get("soc_abundance", SOC_ABUNDANCE) - SOC_HYSTERESIS
+    abundance_power_threshold = 2000 - POWER_HYSTERESIS
+    
+    # Determine new tier based on current state with hysteresis
+    if current_tier == "LOCKOUT":
+        # Only exit LOCKOUT if SOC is well above the lockout threshold
+        if soc >= lockout_threshold:
+            if soc < warning_threshold:
+                new_tier = "WARNING"
+            else:
+                new_tier = "NOMINAL"
+        else:
+            new_tier = "LOCKOUT"
+    elif current_tier == "WARNING":
+        # Can go to LOCKOUT if very low, or up to ADVISORY/NOMINAL
+        if soc < cfg.get("soc_lockout", SOC_LOCKOUT) - (forecast_bonus / 2): # Slightly more lenient going down too
+            new_tier = "LOCKOUT"
+        elif soc >= advisory_threshold:
+            new_tier = "ADVISORY"
+        elif soc >= warning_threshold:
+            new_tier = "NOMINAL"
+        else:
+            new_tier = "WARNING"
+    elif current_tier == "ADVISORY":
+        if soc < cfg.get("soc_warning", SOC_WARNING) - (forecast_bonus / 2):
+            new_tier = "WARNING"
+        elif soc >= cfg.get("soc_abundance", SOC_ABUNDANCE) and watts > abundance_power_threshold:
+            new_tier = "ABUNDANCE"
+        elif soc < advisory_threshold:
+            new_tier = "ADVISORY"
+        else:
+            new_tier = "NOMINAL"
+    elif current_tier == "NOMINAL":
+        if soc < cfg.get("soc_lockout", SOC_LOCKOUT) - (forecast_bonus / 2):
+            new_tier = "LOCKOUT"
+        elif soc < cfg.get("soc_warning", SOC_WARNING) - (forecast_bonus / 2):
+            new_tier = "WARNING"
+        elif soc < cfg.get("soc_advisory", SOC_ADVISORY) - (forecast_bonus / 2):
+            new_tier = "ADVISORY"
+        elif soc > abundance_threshold and watts > abundance_power_threshold:
+            new_tier = "ABUNDANCE"
+        else:
+            new_tier = "NOMINAL"
+    elif current_tier == "ABUNDANCE":
+        # Only exit ABUNDANCE if conditions no longer met with hysteresis
+        if soc <= abundance_threshold or watts <= abundance_power_threshold:
+            if soc < cfg.get("soc_advisory", SOC_ADVISORY) - (forecast_bonus / 2):
+                new_tier = "ADVISORY"
+            else:
+                new_tier = "NOMINAL"
+        else:
+            new_tier = "ABUNDANCE"
     else:
-        new_tier = "NOMINAL"
+        # Default fallback
+        if soc < cfg.get("soc_lockout", SOC_LOCKOUT) - (forecast_bonus / 2):
+            new_tier = "LOCKOUT"
+        elif soc < cfg.get("soc_warning", SOC_WARNING) - (forecast_bonus / 2):
+            new_tier = "WARNING"
+        elif soc < cfg.get("soc_advisory", SOC_ADVISORY) - (forecast_bonus / 2):
+            new_tier = "ADVISORY"
+        elif soc > cfg.get("soc_abundance", SOC_ABUNDANCE) and watts > 2000:
+            new_tier = "ABUNDANCE"
+        else:
+            new_tier = "NOMINAL"
         
-    if new_tier != state["current_tier"]:
-        logger.info(f"Tier transition: {state['current_tier']} -> {new_tier}")
-        old_tier = state["current_tier"]
+    if new_tier != current_tier:
+        old_tier = current_tier
+        state["previous_tier"] = old_tier
         state["current_tier"] = new_tier
+        logger.info(f"Tier transition: {old_tier} -> {new_tier} (SOC: {soc:.1f}%, Power: {watts:.0f}W)")
         
         if new_tier == "LOCKOUT":
             lock_appliances()
-            publish_alert("CRITICAL: Battery Critically Low. All heavy appliances locked.", priority="urgent", tags="skull")
+            publish_alert(
+                f"CRITICAL: Battery at {soc:.1f}% - Critically Low. All heavy appliances locked.",
+                old_tier=old_tier,
+                new_tier=new_tier,
+                priority="urgent",
+                tags="skull,lock"
+            )
         elif new_tier == "WARNING":
-            publish_alert("WARNING: Battery Low. Please reduce consumption.", priority="high", tags="warning")
+            publish_alert(
+                f"WARNING: Battery at {soc:.1f}% - Low. Please reduce consumption.",
+                old_tier=old_tier,
+                new_tier=new_tier,
+                priority="high",
+                tags="warning"
+            )
         elif new_tier == "ADVISORY":
-            publish_alert("ADVISORY: Energy conservation recommended.", priority="default", tags="info")
+            publish_alert(
+                f"ADVISORY: Battery at {soc:.1f}% - Energy conservation recommended.",
+                old_tier=old_tier,
+                new_tier=new_tier,
+                priority="default",
+                tags="info"
+            )
         elif new_tier == "NOMINAL":
             if old_tier == "LOCKOUT" or old_tier == "WARNING":
                 unlock_all_appliances()
-            publish_alert("NOMINAL: Energy levels normal.", priority="low", tags="white_check_mark")
+            publish_alert(
+                f"NOMINAL: Energy levels normal (SOC: {soc:.1f}%).",
+                old_tier=old_tier,
+                new_tier=new_tier,
+                priority="low",
+                tags="white_check_mark"
+            )
         elif new_tier == "ABUNDANCE":
             unlock_all_appliances()
-            publish_alert("ABUNDANCE: Excess solar detected! Feel free to use heavy appliances.", priority="low", tags="sunny")
+            publish_alert(
+                f"ABUNDANCE: Battery at {soc:.1f}%, Power: {watts:.0f}W - Excess solar! Feel free to use heavy appliances.",
+                old_tier=old_tier,
+                new_tier=new_tier,
+                priority="low",
+                tags="sunny"
+            )
             
     save_state()
 
@@ -293,22 +421,36 @@ APPLIANCES = ["washing_machine", "dishwasher", "water_heater", "ac_unit", "ev_ch
 
 def lock_appliances():
     for app in APPLIANCES:
-        mqtt_client.publish(f"home/appliances/{app}/lock", "LOCK", qos=1, retain=True)
-    logger.info("Sent LOCK command to all appliances")
+        mqtt_client.publish(f"solar/appliance/{app}/lock", "LOCK", qos=1, retain=True)
+    logger.info("Sent LOCK command to all appliances via solar/appliance/{app}/lock")
 
 def unlock_all_appliances():
     for app in APPLIANCES:
-        mqtt_client.publish(f"home/appliances/{app}/lock", "UNLOCK", qos=1, retain=True)
-    logger.info("Sent UNLOCK command to all appliances")
+        mqtt_client.publish(f"solar/appliance/{app}/lock", "UNLOCK", qos=1, retain=True)
+    logger.info("Sent UNLOCK command to all appliances via solar/appliance/{app}/lock")
 
 # --- Section I: publish_alert() ---
-def publish_alert(message, priority="default", tags=""):
+def publish_alert(message, old_tier=None, new_tier=None, priority="default", tags=""):
+    alert_data = {
+        "message": message,
+        "priority": priority,
+        "tags": tags,
+        "timestamp": datetime.now().isoformat(),
+        "soc": state["current_soc"],
+        "watts": state["current_watts"],
+    }
+    if old_tier and new_tier:
+        alert_data["transition"] = {
+            "from": old_tier,
+            "to": new_tier
+        }
+    
     # ntfy.sh
     try:
         requests.post(NTFY_URL, 
             data=message.encode('utf-8'),
             headers={
-                "Title": "Solar Sentinel Guard",
+                "Title": f"Solar Sentinel Guard - {new_tier or 'Alert'}",
                 "Priority": priority,
                 "Tags": tags
             },
@@ -318,12 +460,7 @@ def publish_alert(message, priority="default", tags=""):
         logger.error(f"Failed to send ntfy alert: {e}")
     
     # MQTT
-    mqtt_client.publish("home/alerts/energy_guard", json.dumps({
-        "message": message,
-        "priority": priority,
-        "tags": tags,
-        "timestamp": datetime.now().isoformat()
-    }))
+    mqtt_client.publish(MQTT_TOPICS["alerts_guard"], json.dumps(alert_data))
 
 # --- Section J: write_state_snapshot() ---
 def write_state_snapshot():
@@ -343,7 +480,7 @@ def signal_handler(sig, frame):
     logger.info(f"Signal {sig} received. Shutting down...")
     save_state()
     try:
-        mqtt_client.publish("home/guard/status", "OFFLINE", retain=True)
+        mqtt_client.publish(MQTT_TOPICS["guard_status"], "OFFLINE", retain=True)
         mqtt_client.disconnect()
     except:
         pass
@@ -363,12 +500,12 @@ def main():
             with open(args.config, 'r') as f:
                 config_data = json.load(f)
                 # Apply config from file if not overridden by ENV
-                # (For simplicity, we'll just log it here)
                 logger.info(f"Loaded config from {args.config}")
         except Exception as e:
             logger.error(f"Error reading config file: {e}")
 
     logger.info("Starting Energy Guard Brain...")
+    logger.info(f"MQTT Topics: {MQTT_TOPICS}")
     load_state()
     
     # Start InfluxDB init in a separate thread to not block MQTT

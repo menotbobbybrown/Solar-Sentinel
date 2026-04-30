@@ -13,3 +13,16 @@ http:
   trusted_proxies:
     - 127.0.0.1
     - ::1
+
+mqtt:
+  broker: localhost
+
+influxdb:
+  api_version: 2
+  ssl: false
+  host: localhost
+  port: 8086
+  token: my-token
+  organization: my-org
+  bucket: system_state
+

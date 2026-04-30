@@ -4,9 +4,12 @@ data/*
 !data/scripts/
 !data/homeassistant-defaults/
 !data/RECOVERY.md
+!data/agent/
+!data/agent/hermes_agent.py
 
 # Logs
 *.log
+/data/logs/*
 /var/log/supervisor/*
 
 # Node.js
@@ -16,9 +19,40 @@ npm-debug.log
 # Python
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
 
 # Docker
 .dockerignore
 
 # OS files
 .DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Grafana data
+/data/grafana/*
+!/data/grafana/grafana.ini
+
+# InfluxDB data
+/data/influxdb/engine/*
+
+# Configuration with secrets (keep templates)
+/config/influxdb/config.yaml
+/secrets/
+
+# Backup files
+*.bak
+*.backup
+/data/backups/*
+
+# MQTT/InfluxDB credentials
+.env
+.env.local
+*.env

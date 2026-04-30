@@ -22,7 +22,7 @@ fi
 
 if [ -z "$USB_MOUNT" ] || [ "$USB_MOUNT" == "/" ]; then
     log "ERROR: USB drive not detected or not mounted."
-    mosquitto_pub -h localhost -t home/system/backup_status -m "FAILED: USB not detected" 2>/dev/null || true
+    mosquitto_pub -h localhost -t solar/system/backup_status -m "FAILED: USB not detected" 2>/dev/null || true
     curl -s -d "USB Backup Failed: Drive not detected" ntfy.sh/solar_sentinel_alerts > /dev/null 2>&1 || true
     exit 1
 fi
@@ -67,12 +67,12 @@ if [ $? -eq 0 ]; then
     curl -s -d "USB Backup Success: $BACKUP_FILE" ntfy.sh/solar_sentinel_alerts > /dev/null 2>&1 || true
     
     # Publish MQTT status
-    mosquitto_pub -h localhost -t home/system/backup_status -m "SUCCESS: $BACKUP_FILE" 2>/dev/null || true
+    mosquitto_pub -h localhost -t solar/system/backup_status -m "SUCCESS: $BACKUP_FILE" 2>/dev/null || true
     
     log "Backup rotation completed. Kept last 8."
 else
     log "ERROR: Backup failed during compression."
-    mosquitto_pub -h localhost -t home/system/backup_status -m "FAILED: Compression error" 2>/dev/null || true
+    mosquitto_pub -h localhost -t solar/system/backup_status -m "FAILED: Compression error" 2>/dev/null || true
     curl -s -d "USB Backup Failed: Compression error" ntfy.sh/solar_sentinel_alerts > /dev/null 2>&1 || true
     exit 1
 fi
