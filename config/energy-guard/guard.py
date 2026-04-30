@@ -76,6 +76,7 @@ state = {
     "previous_tier": None,
     "hysteresis_soc_offset": 0.0,
     "hysteresis_power_offset": 0.0,
+    "forecast_3h_avg": 0.0,
     "config": {
         "soc_lockout": SOC_LOCKOUT,
         "soc_warning": SOC_WARNING,
@@ -241,6 +242,7 @@ def update_forecast():
         
         forecast_data = []
         total_yield_7day = 0
+        first_3h_power = []
         
         for i in range(len(times)):
             ghi = clearsky['ghi'].iloc[i]
@@ -256,6 +258,8 @@ def update_forecast():
             power = max(0, power)
             
             total_yield_7day += power # Watt-hours if hourly
+            if i < 3:
+                first_3h_power.append(power)
             
             point = Point("solar_forecast") \
                 .time(times[i], WritePrecision.NS) \
@@ -266,6 +270,9 @@ def update_forecast():
         if write_api:
             write_api.write(bucket=INFLUXDB_BUCKET_FORECAST, record=forecast_data)
             logger.info(f"Written {len(forecast_data)} forecast points to InfluxDB")
+        
+        state["forecast_3h_avg"] = sum(first_3h_power) / len(first_3h_power) if first_3h_power else 0.0
+        logger.info(f"3-hour solar forecast average: {state['forecast_3h_avg']:.0f}W")
         
         mqtt_client.publish(MQTT_TOPICS["forecast_7day"], round(total_yield_7day / 1000.0, 2))
     except Exception as e:
@@ -278,15 +285,19 @@ def run_decision_engine():
     watts = state["current_watts"]
     cfg = state["config"]
     current_tier = state["current_tier"]
+    forecast_avg = state.get("forecast_3h_avg", 0.0)
+    
+    # Forecast bonus: if we expect >1000W on average, we can be 5% more lenient with SOC thresholds
+    forecast_bonus = 5.0 if forecast_avg > 1000 else 0.0
     
     new_tier = "NOMINAL"
     hysteresis_soc = state.get("hysteresis_soc_offset", 0.0)
     hysteresis_power = state.get("hysteresis_power_offset", 0.0)
     
     # Apply hysteresis for exiting LOCKOUT state (need SOC to rise above threshold + hysteresis)
-    lockout_threshold = cfg.get("soc_lockout", SOC_LOCKOUT) + SOC_HYSTERESIS
-    warning_threshold = cfg.get("soc_warning", SOC_WARNING) + SOC_HYSTERESIS
-    advisory_threshold = cfg.get("soc_advisory", SOC_ADVISORY) + SOC_HYSTERESIS
+    lockout_threshold = cfg.get("soc_lockout", SOC_LOCKOUT) + SOC_HYSTERESIS - forecast_bonus
+    warning_threshold = cfg.get("soc_warning", SOC_WARNING) + SOC_HYSTERESIS - forecast_bonus
+    advisory_threshold = cfg.get("soc_advisory", SOC_ADVISORY) + SOC_HYSTERESIS - forecast_bonus
     abundance_threshold = cfg.get("soc_abundance", SOC_ABUNDANCE) - SOC_HYSTERESIS
     abundance_power_threshold = 2000 - POWER_HYSTERESIS
     
@@ -302,7 +313,7 @@ def run_decision_engine():
             new_tier = "LOCKOUT"
     elif current_tier == "WARNING":
         # Can go to LOCKOUT if very low, or up to ADVISORY/NOMINAL
-        if soc < cfg.get("soc_lockout", SOC_LOCKOUT):
+        if soc < cfg.get("soc_lockout", SOC_LOCKOUT) - (forecast_bonus / 2): # Slightly more lenient going down too
             new_tier = "LOCKOUT"
         elif soc >= advisory_threshold:
             new_tier = "ADVISORY"
@@ -311,20 +322,20 @@ def run_decision_engine():
         else:
             new_tier = "WARNING"
     elif current_tier == "ADVISORY":
-        if soc < cfg.get("soc_warning", SOC_WARNING):
+        if soc < cfg.get("soc_warning", SOC_WARNING) - (forecast_bonus / 2):
             new_tier = "WARNING"
         elif soc >= cfg.get("soc_abundance", SOC_ABUNDANCE) and watts > abundance_power_threshold:
             new_tier = "ABUNDANCE"
-        elif soc < cfg.get("soc_advisory", SOC_ADVISORY):
+        elif soc < advisory_threshold:
             new_tier = "ADVISORY"
         else:
             new_tier = "NOMINAL"
     elif current_tier == "NOMINAL":
-        if soc < cfg.get("soc_lockout", SOC_LOCKOUT):
+        if soc < cfg.get("soc_lockout", SOC_LOCKOUT) - (forecast_bonus / 2):
             new_tier = "LOCKOUT"
-        elif soc < cfg.get("soc_warning", SOC_WARNING):
+        elif soc < cfg.get("soc_warning", SOC_WARNING) - (forecast_bonus / 2):
             new_tier = "WARNING"
-        elif soc < cfg.get("soc_advisory", SOC_ADVISORY):
+        elif soc < cfg.get("soc_advisory", SOC_ADVISORY) - (forecast_bonus / 2):
             new_tier = "ADVISORY"
         elif soc > abundance_threshold and watts > abundance_power_threshold:
             new_tier = "ABUNDANCE"
@@ -333,7 +344,7 @@ def run_decision_engine():
     elif current_tier == "ABUNDANCE":
         # Only exit ABUNDANCE if conditions no longer met with hysteresis
         if soc <= abundance_threshold or watts <= abundance_power_threshold:
-            if soc < cfg.get("soc_advisory", SOC_ADVISORY):
+            if soc < cfg.get("soc_advisory", SOC_ADVISORY) - (forecast_bonus / 2):
                 new_tier = "ADVISORY"
             else:
                 new_tier = "NOMINAL"
@@ -341,11 +352,11 @@ def run_decision_engine():
             new_tier = "ABUNDANCE"
     else:
         # Default fallback
-        if soc < cfg.get("soc_lockout", SOC_LOCKOUT):
+        if soc < cfg.get("soc_lockout", SOC_LOCKOUT) - (forecast_bonus / 2):
             new_tier = "LOCKOUT"
-        elif soc < cfg.get("soc_warning", SOC_WARNING):
+        elif soc < cfg.get("soc_warning", SOC_WARNING) - (forecast_bonus / 2):
             new_tier = "WARNING"
-        elif soc < cfg.get("soc_advisory", SOC_ADVISORY):
+        elif soc < cfg.get("soc_advisory", SOC_ADVISORY) - (forecast_bonus / 2):
             new_tier = "ADVISORY"
         elif soc > cfg.get("soc_abundance", SOC_ABUNDANCE) and watts > 2000:
             new_tier = "ABUNDANCE"
