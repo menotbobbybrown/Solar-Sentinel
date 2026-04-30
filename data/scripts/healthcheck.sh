@@ -1,6 +1,6 @@
 #!/bin/bash
 # /data/scripts/healthcheck.sh
-# Solar-Sentinel Health Watchdog
+# Solar-Sentinel Health Watchdog (Enhanced)
 
 LOG_FILE="/data/logs/health.log"
 mkdir -p /data/logs
@@ -15,7 +15,7 @@ MESSAGES=()
 # 1. SSD SMART health via smartctl
 if command -v smartctl >/dev/null 2>&1; then
     # Checking /dev/sda as default, can be adjusted
-    SMART_STATUS=$(smartctl -H /dev/sda | grep "test result" | awk '{print $NF}')
+    SMART_STATUS=$(smartctl -H /dev/sda 2>/dev/null | grep "test result" | awk '{print $NF}')
     if [ "$SMART_STATUS" != "PASSED" ] && [ -n "$SMART_STATUS" ]; then
         STATUS="CRITICAL"
         MESSAGES+=("SSD SMART Health: $SMART_STATUS")
@@ -46,30 +46,51 @@ fi
 
 # 4. supervisord service status check + auto-restart if not RUNNING
 if command -v supervisorctl >/dev/null 2>&1; then
-    SERVICES=$(supervisorctl status | grep -v "RUNNING" | awk '{print $1}')
+    SERVICES=$(supervisorctl status 2>/dev/null | grep -v "RUNNING" | awk '{print $1}')
     for service in $SERVICES; do
         log "Service $service is not running. Attempting restart..."
-        supervisorctl restart "$service"
+        supervisorctl restart "$service" 2>/dev/null || true
         STATUS="WARNING"
         MESSAGES+=("Service Restarted: $service")
     done
 fi
 
 # 5. InfluxDB data freshness check (data within 30 min)
+INFLUX_TOKEN="${INFLUXDB_TOKEN:-my-token}"
 if command -v influx >/dev/null 2>&1 && [ -n "$INFLUX_TOKEN" ]; then
-    LAST_DATA=$(influx query 'from(bucket:"solar") |> range(start: -1h) |> last()' --token "$INFLUX_TOKEN" 2>/dev/null)
-    if [ -z "$LAST_DATA" ]; then
+    # Check for solar_forecast bucket data
+    LAST_FORECAST=$(influx query 'from(bucket:"solar_forecast") |> range(start: -1h) |> last()' --token "$INFLUX_TOKEN" --org "${INFLUXDB_ORG:-my-org}" 2>/dev/null | head -5)
+    if [ -z "$LAST_FORECAST" ]; then
         [ "$STATUS" != "CRITICAL" ] && STATUS="WARNING"
-        MESSAGES+=("InfluxDB Data: Stale (>30 min)")
+        MESSAGES+=("InfluxDB: solar_forecast stale or empty")
     fi
 fi
 
-# Prepare MQTT payload
+# 6. Mosquitto broker connectivity check
+if command -v mosquitto_pub >/dev/null 2>&1; then
+    if ! nc -z localhost 1883 > /dev/null 2>&1; then
+        STATUS="CRITICAL"
+        MESSAGES+=("Mosquitto: Not reachable on port 1883")
+    fi
+fi
+
+# 7. Ollama health check
+if command -v curl >/dev/null 2>&1; then
+    if ! curl -sf "http://localhost:11434/api/tags" > /dev/null 2>&1; then
+        [ "$STATUS" != "CRITICAL" ] && STATUS="WARNING"
+        MESSAGES+=("Ollama: Not responding")
+    fi
+fi
+
+# Prepare MQTT payload with standardized topic
 MSG_JOINED=$(IFS=,; echo "${MESSAGES[*]}")
 [ -z "$MSG_JOINED" ] && MSG_JOINED="All systems nominal"
 MQTT_PAYLOAD="{\"status\": \"$STATUS\", \"metrics\": \"$MSG_JOINED\", \"timestamp\": \"$(date -Iseconds)\"}"
 
-# Publish health_metrics to MQTT
+# Publish health_metrics to MQTT (standardized topic)
+mosquitto_pub -h localhost -t solar/system/health_metrics -m "$MQTT_PAYLOAD" 2>/dev/null || true
+
+# Also publish to old topic for backwards compatibility
 mosquitto_pub -h localhost -t home/system/health_metrics -m "$MQTT_PAYLOAD" 2>/dev/null || true
 
 # Send ntfy alerts on errors/warnings
