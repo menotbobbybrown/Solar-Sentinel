@@ -37,20 +37,20 @@ FROM alpine:3.19
 
 # Install runtime dependencies
 RUN apk add --no-cache \
-    python3=~3.11 \
-    py3-pip=~23.3 \
-    nodejs=~20.12 \
-    npm=~10.2 \
-    mosquitto=~2.0 \
-    mosquitto-clients=~2.0 \
-    supervisor=~4.2 \
-    bash=~5.2 \
-    curl=~8.5 \
-    libc6-compat=~1.2 \
-    ca-certificates=~20230506 \
-    util-linux=~2.39 \
-    smartmontools=~7.4 \
-    git=~2.43
+    python3=3.11.10-r0 \
+    py3-pip=23.3.1-r0 \
+    nodejs=20.15.1-r0 \
+    npm=10.2.5-r0 \
+    mosquitto=2.0.18-r0 \
+    mosquitto-clients=2.0.18-r0 \
+    supervisor=4.2.5-r2 \
+    bash=5.2.21-r0 \
+    curl=8.9.1-r1 \
+    libc6-compat=1.2.4-r2 \
+    ca-certificates=20240226-r0 \
+    util-linux=2.39.3-r0 \
+    smartmontools=7.4-r0 \
+    git=2.43.5-r0
 
 # Install Ollama v0.1.27
 ARG OLLAMA_VERSION=0.1.27
@@ -123,7 +123,7 @@ RUN ln -s /etc/homeassistant /config/homeassistant
 RUN chown -R solar:solar /data /config /var/lib/influxdb2 /var/lib/grafana /mosquitto /var/log/supervisor
 
 # Expose ports
-EXPOSE 8123 8086 3000 1883 1880 3001 8080
+EXPOSE 8123 3000 1883 1880 3001 8080
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
   CMD /usr/local/bin/healthcheck.sh

@@ -77,6 +77,7 @@ state = {
     "hysteresis_soc_offset": 0.0,
     "hysteresis_power_offset": 0.0,
     "forecast_3h_avg": 0.0,
+    "forecast_daily_kwh": {},
     "config": {
         "soc_lockout": SOC_LOCKOUT,
         "soc_warning": SOC_WARNING,
@@ -243,6 +244,7 @@ def update_forecast():
         forecast_data = []
         total_yield_7day = 0
         first_3h_power = []
+        daily_yields = {} # kWh per day
         
         for i in range(len(times)):
             ghi = clearsky['ghi'].iloc[i]
@@ -258,6 +260,11 @@ def update_forecast():
             power = max(0, power)
             
             total_yield_7day += power # Watt-hours if hourly
+            
+            # Aggregate daily kWh
+            day_str = times[i].strftime("%Y-%m-%d")
+            daily_yields[day_str] = daily_yields.get(day_str, 0) + (power / 1000.0)
+
             if i < 3:
                 first_3h_power.append(power)
             
@@ -271,6 +278,7 @@ def update_forecast():
             write_api.write(bucket=INFLUXDB_BUCKET_FORECAST, record=forecast_data)
             logger.info(f"Written {len(forecast_data)} forecast points to InfluxDB")
         
+        state["forecast_daily_kwh"] = daily_yields
         state["forecast_3h_avg"] = sum(first_3h_power) / len(first_3h_power) if first_3h_power else 0.0
         logger.info(f"3-hour solar forecast average: {state['forecast_3h_avg']:.0f}W")
         
@@ -287,6 +295,12 @@ def run_decision_engine():
     current_tier = state["current_tier"]
     forecast_avg = state.get("forecast_3h_avg", 0.0)
     
+    # Calculate worst of the next 3 days forecast
+    now_tz = datetime.now(pytz.timezone(TIMEZONE))
+    forecast_daily = state.get("forecast_daily_kwh", {})
+    next_3_days = [forecast_daily.get((now_tz + timedelta(days=i)).strftime("%Y-%m-%d"), 0.0) for i in range(3)]
+    worst_3day = min(next_3_days)
+    
     # Forecast bonus: if we expect >1000W on average, we can be 5% more lenient with SOC thresholds
     forecast_bonus = 5.0 if forecast_avg > 1000 else 0.0
     
@@ -301,8 +315,14 @@ def run_decision_engine():
     abundance_threshold = cfg.get("soc_abundance", SOC_ABUNDANCE) - SOC_HYSTERESIS
     abundance_power_threshold = 2000 - POWER_HYSTERESIS
     
-    # Determine new tier based on current state with hysteresis
-    if current_tier == "LOCKOUT":
+    # Determine new tier based on current state with hysteresis and forecast override
+    if worst_3day < 0.8:
+        new_tier = "LOCKOUT"
+        logger.warning(f"Worst 3-day forecast ({worst_3day:.2f}kWh) < 0.8kWh. Forcing LOCKOUT.")
+    elif worst_3day < 2.5:
+        new_tier = "WARNING"
+        logger.warning(f"Worst 3-day forecast ({worst_3day:.2f}kWh) < 2.5kWh. Forcing WARNING.")
+    elif current_tier == "LOCKOUT":
         # Only exit LOCKOUT if SOC is well above the lockout threshold
         if soc >= lockout_threshold:
             if soc < warning_threshold:
