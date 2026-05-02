@@ -15,7 +15,10 @@ http:
     - ::1
 
 mqtt:
-  broker: localhost
+  broker: !env_var MQTT_BROKER
+  port: !env_var MQTT_PORT
+  username: !env_var MQTT_USER
+  password: !env_var MQTT_PASS
 
 influxdb:
   api_version: 2

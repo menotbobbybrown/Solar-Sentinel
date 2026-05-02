@@ -74,14 +74,6 @@ if command -v mosquitto_pub >/dev/null 2>&1; then
     fi
 fi
 
-# 7. Ollama health check
-if command -v curl >/dev/null 2>&1; then
-    if ! curl -sf "http://localhost:11434/api/tags" > /dev/null 2>&1; then
-        [ "$STATUS" != "CRITICAL" ] && STATUS="WARNING"
-        MESSAGES+=("Ollama: Not responding")
-    fi
-fi
-
 # Prepare MQTT payload with standardized topic
 MSG_JOINED=$(IFS=,; echo "${MESSAGES[*]}")
 [ -z "$MSG_JOINED" ] && MSG_JOINED="All systems nominal"

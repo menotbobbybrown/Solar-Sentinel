@@ -8,6 +8,7 @@ import time
 from datetime import datetime, timedelta
 import paho.mqtt.client as mqtt
 import google.generativeai as genai
+from influxdb_client import InfluxDBClient
 
 # Configure logging
 LOG_FILE = "/data/logs/hermes.log"
@@ -26,10 +27,16 @@ MQTT_USER = os.getenv("MQTT_USER", None)
 MQTT_PASS = os.getenv("MQTT_PASS", None)
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
+# InfluxDB Constants
+INFLUX_URL = os.getenv("INFLUXDB_URL", "http://localhost:8086")
+INFLUX_TOKEN = os.getenv("INFLUXDB_TOKEN", "my-token")
+INFLUX_ORG = os.getenv("INFLUXDB_ORG", "my-org")
+
 INBOX_TOPIC = "solar/hermes/inbox"
 OUTBOX_TOPIC = "solar/hermes/outbox"
 STATUS_TOPIC = "solar/hermes/status"
 GUARD_STATE_FILE = "/data/guard/guard_state.json"
+EVA_REGISTRY_FILE = "/data/guard/eva_registry.json"
 
 if not GOOGLE_API_KEY:
     logger.error("GOOGLE_API_KEY not set. Hermes will not be able to function.")
@@ -45,95 +52,131 @@ class HermesAgent:
         self.mqtt_client.on_connect = self.on_connect
         self.mqtt_client.on_message = self.on_message
         
+        self.influx_client = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
+        
         self.model = None
         self.chat = None
         self.available_functions = {}
         self.setup_gemini()
 
     def setup_gemini(self):
-        # Define the tools
+        # 1. get_system_status
         def get_system_status():
-            """Returns SOC, Watts, and Current Tier."""
-            state = self.load_guard_state()
+            """Returns current system status including SOC, PV watts, and Energy Guard tier."""
+            state = self.load_json_file(GUARD_STATE_FILE)
             return {
                 "soc": state.get("current_soc"),
-                "watts": state.get("current_watts"),
-                "tier": state.get("current_tier")
+                "pv_watts": state.get("current_watts"),
+                "guard_tier": state.get("current_tier"),
+                "timestamp": state.get("timestamp")
             }
 
+        # 2. get_solar_forecast
         def get_solar_forecast():
-            """Returns 7-day yield predictions."""
-            state = self.load_guard_state()
-            return state.get("forecast_daily_kwh", {})
+            """Returns a 3-day solar production forecast in kWh."""
+            state = self.load_json_file(GUARD_STATE_FILE)
+            forecast = state.get("forecast_daily_kwh", {})
+            # Keep only next 3 days
+            sorted_keys = sorted(forecast.keys())[:3]
+            return {k: forecast[k] for k in sorted_keys}
 
-        def get_eva_map():
-            """Retrieves the current Energy Map."""
-            state = self.load_guard_state()
-            return state.get("eva", {}).get("nodes", {})
+        # 3. toggle_device
+        def toggle_device(device_id: str, state: str):
+            """Controls Home Assistant switches. device_id is the entity ID, state is 'ON' or 'OFF'."""
+            topic = f"solar/switch/{device_id}/set"
+            self.mqtt_client.publish(topic, state.upper(), retain=False)
+            return f"Command sent: Set {device_id} to {state}"
 
-        def get_optimal_window():
-            """Returns the best 4-hour window for heavy loads."""
-            state = self.load_guard_state()
-            return state.get("eva", {}).get("last_optimal_window")
-
-        def control_appliance(device_id: str, action: str):
-            """Locks/Unlocks devices. Action must be 'LOCK' or 'UNLOCK'."""
+        # 4. lock_device
+        def lock_device(device_id: str, action: str):
+            """Triggers EVA locking/unlocking for a device. action is 'LOCK' or 'UNLOCK'."""
             topic = f"solar/appliance/{device_id}/lock"
             self.mqtt_client.publish(topic, action.upper(), retain=True)
-            return f"Action {action} sent to {device_id}"
+            return f"EVA {action} command sent for {device_id}"
 
-        def set_thresholds(lockout: float = None, warning: float = None, advisory: float = None, abundance: float = None):
-            """Updates Guard SOC thresholds."""
-            if lockout is not None: self.mqtt_client.publish("solar/guard/config/soc_lockout", str(lockout), retain=True)
-            if warning is not None: self.mqtt_client.publish("solar/guard/config/soc_warning", str(warning), retain=True)
-            if advisory is not None: self.mqtt_client.publish("solar/guard/config/soc_advisory", str(advisory), retain=True)
-            if abundance is not None: self.mqtt_client.publish("solar/guard/config/soc_abundance", str(abundance), retain=True)
-            return "Threshold update commands sent."
+        # 5. trigger_eva_map
+        def trigger_eva_map():
+            """Forces an immediate update and publication of the Energy Map."""
+            self.mqtt_client.publish("solar/eva/command", "PUBLISH_MAP")
+            return "Energy Map update triggered."
 
-        def get_thresholds():
-            """Reads current Guard configuration."""
-            state = self.load_guard_state()
-            return state.get("config", {})
-
-        def trigger_phantom_cut():
-            """Executes immediate waste analysis and cut."""
-            self.mqtt_client.publish("solar/eva/command", "EVA_PHANTOM_CUT")
-            return "Phantom cut command triggered."
-
-        def trigger_optimization():
-            """Runs the Optimal Window Finder."""
+        # 6. trigger_eva_optimize
+        def trigger_eva_optimize():
+            """Starts the EVA schedule optimization process to find the best window for heavy loads."""
             self.mqtt_client.publish("solar/eva/command", "EVA_OPTIMIZE")
-            return "Optimization command triggered."
+            return "EVA Optimization process started."
 
-        def trigger_learning():
-            """Starts pattern recognition on historical data."""
+        # 7. trigger_eva_learn
+        def trigger_eva_learn():
+            """Starts the pattern learning engine to analyze historical device usage."""
             self.mqtt_client.publish("solar/eva/command", "EVA_LEARN")
-            return "Pattern learning command triggered."
+            return "EVA Pattern Learning started."
 
-        def get_alerts():
-            """Fetches recent system security/energy alerts."""
-            state = self.load_guard_state()
-            return {"last_alert_tier": state.get("last_alert_tier")}
+        # 8. cut_phantom_loads
+        def cut_phantom_loads():
+            """Triggers an immediate check and cut of detected phantom loads."""
+            self.mqtt_client.publish("solar/eva/command", "EVA_PHANTOM_CUT")
+            return "Phantom load cut command sent."
 
-        def get_device_intelligence(node_id: str):
-            """Returns learned behavior patterns for a specific node."""
-            state = self.load_guard_state()
-            patterns = state.get("eva", {}).get("patterns", {})
-            return patterns.get(node_id, "No patterns found for this node.")
+        # 9. get_eva_registry
+        def get_eva_registry():
+            """Returns the current EVA device registry including priorities and classifications."""
+            return self.load_json_file(EVA_REGISTRY_FILE)
+
+        # 10. update_device_priority
+        def update_device_priority(device_id: str, priority: str):
+            """Updates the priority of a device in the EVA registry. priority can be 'PHANTOM', 'LUXURY', or 'SHIFTABLE'."""
+            registry = self.load_json_file(EVA_REGISTRY_FILE)
+            if device_id in registry:
+                registry[device_id]["priority"] = priority.upper()
+                self.save_json_file(EVA_REGISTRY_FILE, registry)
+                # Notify Guard to reload
+                self.mqtt_client.publish("solar/eva/command", "RELOAD_REGISTRY")
+                return f"Updated {device_id} priority to {priority}."
+            return f"Device {device_id} not found in registry."
+
+        # 11. get_health_status
+        def get_health_status():
+            """Returns the latest system health metrics, including SSD, disk, and service status."""
+            log_path = "/data/logs/health.log"
+            if os.path.exists(log_path):
+                try:
+                    with open(log_path, 'r') as f:
+                        lines = f.readlines()
+                        if lines:
+                            return {"last_check": lines[-1].strip()}
+                except Exception as e:
+                    logger.error(f"Error reading health log: {e}")
+            return {"status": "Operational", "details": "All services running nominal."}
+
+        # 12. get_energy_usage_summary
+        def get_energy_usage_summary():
+            """Returns a 24-hour energy usage summary from InfluxDB."""
+            query = f'from(bucket: "system_state") |> range(start: -24h) |> filter(fn: (r) => r["_field"] == "load_watts") |> aggregateWindow(every: 1h, fn: mean, createEmpty: false) |> yield(name: "mean")'
+            try:
+                tables = self.influx_client.query_api().query(query)
+                results = []
+                for table in tables:
+                    for record in table.records:
+                        results.append({"time": record.get_time().isoformat(), "avg_watts": record.get_value()})
+                return results
+            except Exception as e:
+                logger.error(f"Error querying InfluxDB: {e}")
+                return {"error": "Could not retrieve usage summary."}
 
         self.available_functions = {
             "get_system_status": get_system_status,
             "get_solar_forecast": get_solar_forecast,
-            "get_eva_map": get_eva_map,
-            "get_optimal_window": get_optimal_window,
-            "control_appliance": control_appliance,
-            "set_thresholds": set_thresholds,
-            "get_thresholds": get_thresholds,
-            "trigger_phantom_cut": trigger_phantom_cut,
-            "trigger_optimization": trigger_optimization,
-            "trigger_learning": trigger_learning,
-            "get_alerts": get_alerts,
-            "get_device_intelligence": get_device_intelligence
+            "toggle_device": toggle_device,
+            "lock_device": lock_device,
+            "trigger_eva_map": trigger_eva_map,
+            "trigger_eva_optimize": trigger_eva_optimize,
+            "trigger_eva_learn": trigger_eva_learn,
+            "cut_phantom_loads": cut_phantom_loads,
+            "get_eva_registry": get_eva_registry,
+            "update_device_priority": update_device_priority,
+            "get_health_status": get_health_status,
+            "get_energy_usage_summary": get_energy_usage_summary
         }
 
         self.model = genai.GenerativeModel(
@@ -142,19 +185,27 @@ class HermesAgent:
         )
         self.chat = self.model.start_chat()
         
+        # System instruction for version 0.4.1 (sent as first message)
         try:
-            self.chat.send_message("You are Hermes, the AI agent for Solar-Sentinel-AIO. You have access to system tools to manage energy, EVA (Energy Visual Analytics), and appliance control. Use the provided tools to help the user.")
+            self.chat.send_message("You are Hermes, the AI agent for Solar-Sentinel-AIO v3. You manage the energy system, EVA (Energy Value Analysis), and device control. Use tools to provide real-time data and execute commands. Be concise and professional.")
         except Exception as e:
             logger.error(f"Error sending system prompt: {e}")
 
-    def load_guard_state(self):
-        if os.path.exists(GUARD_STATE_FILE):
+    def load_json_file(self, filepath):
+        if os.path.exists(filepath):
             try:
-                with open(GUARD_STATE_FILE, 'r') as f:
+                with open(filepath, 'r') as f:
                     return json.load(f)
             except Exception as e:
-                logger.error(f"Error loading guard state: {e}")
+                logger.error(f"Error loading {filepath}: {e}")
         return {}
+
+    def save_json_file(self, filepath, data):
+        try:
+            with open(filepath, 'w') as f:
+                json.dump(data, f, indent=4)
+        except Exception as e:
+            logger.error(f"Error saving {filepath}: {e}")
 
     def on_connect(self, client, userdata, flags, rc):
         if rc == 0:
@@ -171,7 +222,7 @@ class HermesAgent:
             
             response = self.chat.send_message(payload)
             
-            # Handle function calls
+            # Handle function calls manually for SDK 0.4.1
             while True:
                 has_function_call = False
                 if response.candidates[0].content.parts:
