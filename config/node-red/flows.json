@@ -657,7 +657,7 @@
         "height": "8",
         "name": "Hermes Reply",
         "label": "",
-        "format": "<div ng-bind-html=\"msg.payload\"></div>",
+        "format": "<div ng-bind-html=\"msg.payload.response || msg.payload\"></div>",
         "layout": "col-center",
         "className": "",
         "x": 350,
