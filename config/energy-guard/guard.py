@@ -1,3 +1,19 @@
+#!/usr/bin/env python3
+"""
+Solar-Sentinel-AIO v3 Phase 5
+Energy Guard - EVA (Energy Value Architecture) Implementation
+
+Sections:
+A. Environment Configuration
+B. Logging Setup
+C. State Persistence
+D. MQTT Setup with solar/ namespace
+E. InfluxDB Connection
+F. Forecast Engine
+G. Decision Engine
+H. EVA System (Registry, Phantom Cut, Optimal Window, Smart Lockout, Pattern Learning, Map Snapshot)
+"""
+
 import os
 import sys
 import time
@@ -20,7 +36,10 @@ import numpy as np
 from pvlib.location import Location
 from logging.handlers import RotatingFileHandler
 
-# --- Section A: Environment variable configuration ---
+# ============================================================================
+# SECTION A: ENVIRONMENT CONFIGURATION
+# ============================================================================
+
 MQTT_BROKER = os.getenv("MQTT_BROKER", "localhost")
 MQTT_PORT = int(os.getenv("MQTT_PORT", 1883))
 MQTT_USER = os.getenv("MQTT_USER", None)
@@ -44,16 +63,24 @@ PANEL_AREA = float(os.getenv("PANEL_AREA", 20.0))
 
 NTFY_URL = os.getenv("NTFY_URL", "https://ntfy.sh/solar_sentinel_guard_alerts")
 
-# Thresholds
+# SOC Thresholds
 SOC_LOCKOUT = float(os.getenv("SOC_LOCKOUT", 20.0))
 SOC_WARNING = float(os.getenv("SOC_WARNING", 40.0))
 SOC_ADVISORY = float(os.getenv("SOC_ADVISORY", 60.0))
 SOC_ABUNDANCE = float(os.getenv("SOC_ABUNDANCE", 90.0))
 
+# EVA Configuration
+EVA_PHANTOM_THRESHOLD_W = float(os.getenv("EVA_PHANTOM_THRESHOLD_W", 5.0))
+EVA_OPTIMAL_WINDOW_HOURS = int(os.getenv("EVA_OPTIMAL_WINDOW_HOURS", 4))
+EVA_LOCKOUT_HYSTERESIS_MIN = int(os.getenv("EVA_LOCKOUT_HYSTERESIS_MIN", 2))
+
 SOC_HYSTERESIS = 2.0
 POWER_HYSTERESIS = 100
 
-# --- Section B: Logging ---
+# ============================================================================
+# SECTION B: LOGGING SETUP
+# ============================================================================
+
 LOG_FILE = "/data/logs/guard.log"
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 logger = logging.getLogger("EnergyGuard")
@@ -66,7 +93,10 @@ stdout_handler = logging.StreamHandler(sys.stdout)
 stdout_handler.setFormatter(formatter)
 logger.addHandler(stdout_handler)
 
-# --- Section C: State Persistence ---
+# ============================================================================
+# SECTION C: STATE PERSISTENCE
+# ============================================================================
+
 STATE_FILE = "/data/guard/guard_state.json"
 REGISTRY_FILE = "/data/guard/eva_registry.json"
 
@@ -116,20 +146,35 @@ def save_state():
     except Exception as e:
         logger.error(f"Error saving state: {e}")
 
-# --- Section D: MQTT Setup ---
+# ============================================================================
+# SECTION D: MQTT SETUP (solar/ namespace)
+# ============================================================================
+
 MQTT_TOPICS = {
+    # Battery and Solar
     "battery_soc": "solar/battery/soc",
     "pv_power": "solar/pv/power",
+    
+    # Guard
     "guard_status": "solar/guard/status",
     "guard_config": "solar/guard/config/",
     "guard_command": "solar/guard/command",
+    
+    # Forecast
     "forecast_7day": "solar/forecast/7day",
+    
+    # Alerts
     "alerts_guard": "solar/alerts/guard",
+    
+    # Hermes
     "hermes_inbox": "solar/hermes/inbox",
     "hermes_outbox": "solar/hermes/outbox",
+    
+    # EVA
     "eva_map": "solar/eva/map",
     "eva_nodes": "solar/eva/node/#",
     "eva_command": "solar/eva/command",
+    "eva_optimal_window": "solar/eva/optimal_window",
 }
 
 mqtt_client = mqtt.Client(client_id="solar_guard")
@@ -186,7 +231,10 @@ def mqtt_thread_func():
             logger.error(f"MQTT Error: {e}. Retrying...")
             time.sleep(5)
 
-# --- Section E: InfluxDB ---
+# ============================================================================
+# SECTION E: INFLUXDB CONNECTION
+# ============================================================================
+
 influx_client = None
 write_api = None
 
@@ -201,7 +249,10 @@ def init_influx():
             logger.error(f"InfluxDB init failed: {e}. Retrying...")
             time.sleep(10)
 
-# --- Section F: Forecast Engine ---
+# ============================================================================
+# SECTION F: FORECAST ENGINE
+# ============================================================================
+
 def get_weather_forecast():
     for url in [f"http://localhost:8080/v1/forecast?latitude={LATITUDE}&longitude={LONGITUDE}&hourly=cloudcover,temperature_2m&timezone={TIMEZONE}",
                 f"https://api.open-meteo.com/v1/forecast?latitude={LATITUDE}&longitude={LONGITUDE}&hourly=cloudcover,temperature_2m&timezone={TIMEZONE}"]:
@@ -234,11 +285,14 @@ def update_forecast():
         if write_api: write_api.write(bucket=INFLUXDB_BUCKET_FORECAST, record=forecast_data)
         state["forecast_daily_kwh"] = daily_yields
         mqtt_client.publish(MQTT_TOPICS["forecast_7day"], round(sum(daily_yields.values()), 2))
-        logger.info(f"Forecast updated. Next 3 days: {[daily_yields.get((datetime.now(pytz.timezone(TIMEZONE)) + timedelta(days=i)).strftime('%Y-%m-%d'), 0) for i in range(3)]}")
+        logger.info(f"Forecast updated. Next 3 days: {[daily_yields.get((datetime.now(pytz.timezone(TIMEZONE)) + timedelta(days=i)).strftime('%Y-%m-%d'), 0.0) for i in range(3)]}")
     except Exception as e:
         logger.error(f"Forecast engine error: {e}")
 
-# --- Section G: Decision Engine ---
+# ============================================================================
+# SECTION G: DECISION ENGINE
+# ============================================================================
+
 def run_decision_engine():
     global state
     soc = state["current_soc"]
@@ -263,14 +317,22 @@ def run_decision_engine():
         state["previous_tier"] = current_tier
         state["current_tier"] = new_tier
         logger.info(f"Tier transition: {current_tier} -> {new_tier}")
-        if new_tier == "LOCKOUT": lock_appliances()
-        elif current_tier in ["LOCKOUT", "WARNING"] and new_tier == "NOMINAL": unlock_all_appliances()
-        publish_alert(f"Tier changed to {new_tier}. SOC: {soc}%, Forecast Worst: {worst_3day:.2f}kWh", old_tier=current_tier, new_tier=new_tier)
+        
+        # Handle EVA-aware lockout logic
+        if new_tier == "LOCKOUT": 
+            eva_smart_lockout()
+        elif current_tier in ["LOCKOUT", "WARNING"] and new_tier == "NOMINAL": 
+            unlock_all_appliances()
+            
+        publish_alert(f"Tier changed to {new_tier}. SOC: {soc}%, Forecast Worst: {worst_3day:.2f}kWh", 
+                      old_tier=current_tier, new_tier=new_tier)
     save_state()
 
-# --- EVA SECTIONS (A-H) ---
+# ============================================================================
+# SECTION H: EVA SYSTEM
+# ============================================================================
 
-# Section A: Registry Management
+# H-1: Registry Management
 def load_eva_registry():
     if os.path.exists(REGISTRY_FILE):
         try:
@@ -288,29 +350,35 @@ def save_eva_registry(registry):
     except Exception as e:
         logger.error(f"Error saving EVA registry: {e}")
 
-# Section B: Phantom Cut Logic
+# H-2: Phantom Load Detection & Cutting
 def eva_phantom_cut():
+    """Detect and cut phantom loads - devices consuming power when reported OFF"""
     registry = load_eva_registry()
     nodes = state["eva"]["nodes"]
     cuts = 0
+    
     for device_id, info in registry.items():
         if info.get("priority") == "PHANTOM":
             node = nodes.get(device_id, {})
             # If consuming power but HA says it's OFF
-            if node.get("last_power", 0) > 5.0 and node.get("last_state") == "OFF":
-                mqtt_client.publish(f"solar/eva/node/{device_id}/cut", "CUT")
+            if node.get("last_power", 0) > EVA_PHANTOM_THRESHOLD_W and node.get("last_state") == "OFF":
+                mqtt_client.publish(f"solar/eva/node/{device_id}/cut", "CUT", retain=True)
                 cuts += 1
+                logger.info(f"EVA: Phantom cut performed on {device_id}")
+    
     if cuts > 0:
         state["eva"]["phantom_cuts_performed"] += cuts
         publish_alert(f"EVA: Cut {cuts} phantom loads.", priority="default", tags="zap")
+    
+    return cuts
 
-# Section C: Optimal Window Finder
+# H-3: Optimal Window Finder
 def eva_optimal_window_finder():
-    logger.info("EVA: Finding optimal 4-hour window...")
+    """Find the best 4-hour window for running heavy loads based on solar forecast"""
+    logger.info("EVA: Finding optimal window...")
     if not influx_client: return
     
     query_api = influx_client.query_api()
-    # Query forecast for the next 48 hours
     query = f'''
     from(bucket: "{INFLUXDB_BUCKET_FORECAST}")
       |> range(start: now(), stop: 48h)
@@ -325,62 +393,112 @@ def eva_optimal_window_finder():
             for record in table.records:
                 forecast_data.append({"time": record.get_time(), "power": record.get_value()})
         
-        if len(forecast_data) < 4:
+        if len(forecast_data) < EVA_OPTIMAL_WINDOW_HOURS:
             logger.warning("Not enough forecast data for optimal window finder.")
             return
 
         max_yield = 0
         best_start_time = None
         
-        for i in range(len(forecast_data) - 3):
-            current_yield = sum(forecast_data[j]["power"] for j in range(i, i+4))
-            if current_yield > max_yield:
-                max_yield = current_yield
+        for i in range(len(forecast_data) - EVA_OPTIMAL_WINDOW_HOURS + 1):
+            window_power = sum(forecast_data[j]["power"] for j in range(i, i + EVA_OPTIMAL_WINDOW_HOURS))
+            if window_power > max_yield:
+                max_yield = window_power
                 best_start_time = forecast_data[i]["time"]
         
         if best_start_time:
             window = {
                 "start_time": best_start_time.isoformat(),
-                "end_time": (best_start_time + timedelta(hours=4)).isoformat(),
+                "end_time": (best_start_time + timedelta(hours=EVA_OPTIMAL_WINDOW_HOURS)).isoformat(),
                 "predicted_yield_wh": round(max_yield, 2)
             }
             state["eva"]["last_optimal_window"] = window
-            mqtt_client.publish("solar/eva/optimal_window", json.dumps(window), retain=True)
-            logger.info(f"Optimal window found: {best_start_time}")
+            mqtt_client.publish(MQTT_TOPICS["eva_optimal_window"], json.dumps(window), retain=True)
+            logger.info(f"EVA: Optimal window found: {best_start_time}")
             save_state()
+            
+            # Notify Hermes
+            mqtt_client.publish(MQTT_TOPICS["hermes_outbox"], json.dumps({
+                "type": "optimal_window",
+                "window": window,
+                "timestamp": datetime.now().isoformat()
+            }))
     except Exception as e:
         logger.error(f"Error in optimal window finder: {e}")
 
-# Section D: Smart Lockout (EVA-Aware)
-def lock_appliances():
+# H-4: Smart Lockout (EVA-Aware)
+def eva_smart_lockout():
+    """
+    Smart lockout logic:
+    - CRITICAL: Never lock
+    - SHIFTABLE: Schedule for optimal window instead of immediate lock
+    - LUXURY: Lock immediately
+    - PHANTOM: Lock immediately (already handled by phantom cut)
+    """
     registry = load_eva_registry()
     tier = state["current_tier"]
+    optimal_window = state["eva"].get("last_optimal_window")
+    
+    scheduled = []
+    locked = []
+    
     for device_id, info in registry.items():
-        should_lock = False
         priority = info.get("priority")
-        if tier == "LOCKOUT" and priority in ["PHANTOM", "LUXURY", "SHIFTABLE"]: 
-            should_lock = True
-        elif tier == "WARNING" and priority in ["PHANTOM", "LUXURY"]: 
-            should_lock = True
-        elif tier == "ADVISORY" and priority == "PHANTOM":
-            should_lock = True
+        should_lock = False
+        
+        if tier == "LOCKOUT":
+            if priority in ["PHANTOM", "LUXURY"]:
+                should_lock = True
+            elif priority == "SHIFTABLE":
+                # Schedule instead of lock
+                if optimal_window:
+                    schedule_msg = json.dumps({
+                        "device_id": device_id,
+                        "scheduled_time": optimal_window["start_time"],
+                        "reason": "low_battery_shift"
+                    })
+                    mqtt_client.publish(f"solar/eva/device/{device_id}/schedule", schedule_msg, retain=True)
+                    scheduled.append(device_id)
+                else:
+                    # No optimal window, fall back to lock
+                    should_lock = True
+        elif tier == "WARNING":
+            if priority in ["PHANTOM", "LUXURY"]:
+                should_lock = True
+        elif tier == "ADVISORY":
+            if priority == "PHANTOM":
+                should_lock = True
         
         if should_lock:
             mqtt_client.publish(f"solar/appliance/{device_id}/lock", "LOCK", retain=True)
+            locked.append(f"{device_id}({priority})")
             logger.info(f"EVA Lock: {device_id} (Priority: {priority})")
+    
+    if scheduled:
+        publish_alert(f"EVA: Scheduled {len(scheduled)} shiftable devices for optimal window", priority="low", tags="clock")
+    if locked:
+        logger.info(f"EVA Lock: {locked}")
+
+def lock_appliances():
+    """Legacy wrapper for compatibility"""
+    eva_smart_lockout()
 
 def unlock_all_appliances():
+    """Unlock all appliances in the EVA registry"""
     registry = load_eva_registry()
     for device_id in registry:
         mqtt_client.publish(f"solar/appliance/{device_id}/lock", "UNLOCK", retain=True)
     logger.info("EVA Unlock: All appliances")
 
-# Section E: Pattern Learning
+# H-5: Pattern Learning from InfluxDB
 def eva_pattern_learning():
-    logger.info("EVA: Learning energy patterns from InfluxDB...")
+    """Learn energy patterns from historical device usage"""
+    logger.info("EVA: Learning energy patterns...")
     if not influx_client: return
     
     query_api = influx_client.query_api()
+    
+    # Learn average power consumption per device
     query = f'''
     from(bucket: "{INFLUXDB_BUCKET_EVA_NODES}")
       |> range(start: -7d)
@@ -391,86 +509,206 @@ def eva_pattern_learning():
     '''
     try:
         tables = query_api.query(query)
+        patterns = {}
         for table in tables:
             for record in table.records:
                 node_id = record.values.get("node_id")
                 mean_power = record.get_value()
-                state["eva"]["patterns"][node_id] = {
+                patterns[node_id] = {
                     "avg_w": round(mean_power, 2),
                     "confidence": 0.85,
                     "last_learned": datetime.now().isoformat()
                 }
-                point = Point("eva_patterns").tag("node_id", node_id).field("avg_w", float(mean_power))
-                write_api.write(bucket=INFLUXDB_BUCKET_EVA_PATTERNS, record=point)
-        logger.info("EVA: Pattern learning complete.")
+                
+                # Store pattern in InfluxDB
+                if write_api:
+                    point = Point("eva_patterns").tag("node_id", node_id).field("avg_w", float(mean_power))
+                    write_api.write(bucket=INFLUXDB_BUCKET_EVA_PATTERNS, record=point)
+        
+        state["eva"]["patterns"] = patterns
+        logger.info(f"EVA: Learned {len(patterns)} patterns")
         save_state()
+        
+        # Generate recommendations
+        eva_generate_recommendations()
+        
     except Exception as e:
         logger.error(f"Error in pattern learning: {e}")
 
-# Section F: Map Snapshot
+def eva_generate_recommendations():
+    """Generate EVA recommendations based on patterns"""
+    recommendations = []
+    patterns = state["eva"].get("patterns", {})
+    nodes = state["eva"].get("nodes", {})
+    
+    for device_id, pattern in patterns.items():
+        avg_w = pattern.get("avg_w", 0)
+        node = nodes.get(device_id, {})
+        current_power = node.get("last_power", 0)
+        
+        # High consumption anomaly
+        if avg_w > 500 and current_power > avg_w * 1.5:
+            recommendations.append({
+                "type": "anomaly",
+                "device_id": device_id,
+                "message": f"Unusual consumption detected for {device_id}",
+                "severity": "warning"
+            })
+        
+        # Phantom load detection
+        if avg_w < EVA_PHANTOM_THRESHOLD_W and avg_w > 0.5:
+            recommendations.append({
+                "type": "phantom",
+                "device_id": device_id,
+                "message": f"Possible phantom load: {device_id} ({avg_w:.1f}W standby)",
+                "severity": "info"
+            })
+    
+    state["eva"]["recommendations"] = recommendations
+    if recommendations:
+        logger.info(f"EVA: Generated {len(recommendations)} recommendations")
+
+# H-6: Energy Map Snapshot
 def eva_publish_map():
+    """Publish full energy map to MQTT"""
+    registry = load_eva_registry()
+    
+    # Enrich nodes with registry info
+    enriched_nodes = {}
+    for node_id, node_data in state["eva"]["nodes"].items():
+        registry_info = registry.get(node_id, {})
+        enriched_nodes[node_id] = {
+            **node_data,
+            "priority": registry_info.get("priority", "UNKNOWN"),
+            "name": registry_info.get("name", node_id),
+            "ha_entity": registry_info.get("ha_entity", "")
+        }
+    
     energy_map = {
         "timestamp": datetime.now().isoformat(),
-        "system": {"soc": state["current_soc"], "tier": state["current_tier"], "pv_watts": state["current_watts"]},
-        "nodes": state["eva"]["nodes"],
+        "system": {
+            "soc": state["current_soc"],
+            "tier": state["current_tier"],
+            "pv_watts": state["current_watts"]
+        },
+        "nodes": enriched_nodes,
         "phantom_total": state["eva"]["phantom_cuts_performed"],
-        "optimal_window": state["eva"]["last_optimal_window"]
+        "optimal_window": state["eva"]["last_optimal_window"],
+        "recommendations": state["eva"]["recommendations"],
+        "patterns_count": len(state["eva"]["patterns"])
     }
+    
     mqtt_client.publish(MQTT_TOPICS["eva_map"], json.dumps(energy_map), retain=True)
+    
+    # Also write to InfluxDB for historical tracking
+    if write_api:
+        point = Point("eva_map")
+        point.field("soc", state["current_soc"])
+        point.field("pv_watts", state["current_watts"])
+        point.field("phantom_cuts", state["eva"]["phantom_cuts_performed"])
+        write_api.write(bucket=INFLUXDB_BUCKET_STATE, record=point)
 
-# Section G: Helpers
+# H-7: Node Update Handler
 def handle_eva_node_update(node_id, data_type, payload):
+    """Handle incoming EVA node updates from MQTT"""
     if node_id not in state["eva"]["nodes"]: 
         state["eva"]["nodes"][node_id] = {"last_power": 0.0, "last_state": "UNKNOWN"}
     
     node = state["eva"]["nodes"][node_id]
+    
     if data_type == "power": 
         node["last_power"] = float(payload)
+        # Write to InfluxDB
+        if write_api:
+            point = Point("eva_nodes").tag("node_id", node_id).field("power_w", float(payload))
+            write_api.write(bucket=INFLUXDB_BUCKET_EVA_NODES, record=point)
     elif data_type == "state": 
         node["last_state"] = payload
-    
-    if write_api and data_type == "power":
-        point = Point("eva_nodes").tag("node_id", node_id).field("power_w", float(payload))
-        write_api.write(bucket=INFLUXDB_BUCKET_EVA_NODES, record=point)
 
+# H-8: Command Handler
 def handle_eva_command(payload):
-    if payload == "EVA_PHANTOM_CUT": 
-        eva_phantom_cut()
-    elif payload == "PUBLISH_MAP": 
-        eva_publish_map()
-    elif payload == "EVA_OPTIMIZE": 
-        eva_optimal_window_finder()
-    elif payload == "EVA_LEARN": 
-        eva_pattern_learning()
-    elif payload == "RELOAD_REGISTRY":
-        logger.info("EVA: Reloading registry requested.")
-        # Actually load_eva_registry is called on demand, so just log it.
+    """Handle EVA commands from MQTT"""
+    commands = {
+        "EVA_PHANTOM_CUT": eva_phantom_cut,
+        "PUBLISH_MAP": eva_publish_map,
+        "EVA_OPTIMIZE": eva_optimal_window_finder,
+        "EVA_LEARN": eva_pattern_learning,
+        "RELOAD_REGISTRY": lambda: logger.info("EVA: Registry reload requested")
+    }
+    
+    if payload in commands:
+        commands[payload]()
+    else:
+        logger.warning(f"Unknown EVA command: {payload}")
 
-# Section H: Schedule
+# H-9: Schedule Setup
 def setup_eva_schedule():
-    schedule.every(1).minutes.do(eva_publish_map)
-    schedule.every(1).hours.do(eva_phantom_cut)
+    """Setup EVA scheduled tasks"""
+    # Map updates
+    map_interval = int(os.getenv("EVA_MAP_PUBLISH_INTERVAL_M", 1))
+    schedule.every(map_interval).minutes.do(eva_publish_map)
+    
+    # Phantom cuts - hourly
+    schedule.every().hour.do(eva_phantom_cut)
+    
+    # Optimal window - every 6 hours
     schedule.every(6).hours.do(eva_optimal_window_finder)
+    
+    # Pattern learning - daily at 2 AM
     schedule.every().day.at("02:00").do(eva_pattern_learning)
+    
+    # Recommendations generation - every 6 hours
+    schedule.every(6).hours.do(eva_generate_recommendations)
 
-# --- Final Boilerplate ---
+# ============================================================================
+# ALERTS & NOTIFICATIONS
+# ============================================================================
+
 def publish_alert(msg, old_tier=None, new_tier=None, priority="default", tags=""):
-    alert = {"message": msg, "timestamp": datetime.now().isoformat(), "soc": state["current_soc"]}
+    alert = {
+        "message": msg, 
+        "timestamp": datetime.now().isoformat(), 
+        "soc": state["current_soc"]
+    }
+    if old_tier:
+        alert["old_tier"] = old_tier
+    if new_tier:
+        alert["new_tier"] = new_tier
+    
     mqtt_client.publish(MQTT_TOPICS["alerts_guard"], json.dumps(alert))
+    
     try: 
-        requests.post(NTFY_URL, data=msg, headers={"Title": "Solar Guard", "Priority": priority, "Tags": tags}, timeout=5)
+        requests.post(NTFY_URL, data=msg, headers={
+            "Title": "Solar Guard", 
+            "Priority": priority, 
+            "Tags": tags
+        }, timeout=5)
     except: 
         pass
 
+# ============================================================================
+# MAIN
+# ============================================================================
+
 def main():
+    logger.info("Starting Energy Guard v3 Phase 5")
     load_state()
+    
     threading.Thread(target=init_influx, daemon=True).start()
     threading.Thread(target=mqtt_thread_func, daemon=True).start()
+    
     time.sleep(5)
+    
+    # Initial setup
     update_forecast()
     run_decision_engine()
     setup_eva_schedule()
+    
+    # Decision engine runs every 5 minutes
     schedule.every(5).minutes.do(run_decision_engine)
+    
+    # Also update forecast hourly
+    schedule.every().hour.do(update_forecast)
     
     while True:
         schedule.run_pending()

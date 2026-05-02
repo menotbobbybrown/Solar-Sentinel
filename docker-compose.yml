@@ -6,12 +6,56 @@ services:
     image: solar-sentinel-aio:v3
     container_name: solar-sentinel
     ports:
-      - "8123:8123" # Home Assistant
-      - "3000:3000" # Grafana
-      - "1883:1883" # Mosquitto
-      - "1880:1880" # Node-RED
-      - "3001:3001" # Uptime Kuma
-      - "8080:8080" # Open-Meteo
+      - "8123:8123"   # Home Assistant
+      - "3000:3000"   # Grafana
+      - "1883:1883"   # Mosquitto
+      - "1880:1880"   # Node-RED
+      - "3001:3001"   # Uptime Kuma
+      - "8080:8080"   # Open-Meteo
     volumes:
       - ./data:/data
+    environment:
+      # MQTT Configuration
+      MQTT_BROKER: "localhost"
+      MQTT_PORT: 1883
+      MQTT_USER: "solar"
+      MQTT_PASS: "solar123"
+
+      # InfluxDB Configuration
+      INFLUXDB_URL: "http://localhost:8086"
+      INFLUXDB_TOKEN: "my-token"
+      INFLUXDB_ORG: "my-org"
+      INFLUXDB_BUCKET_FORECAST: "solar_forecast"
+      INFLUXDB_BUCKET_STATE: "system_state"
+      INFLUXDB_BUCKET_EVA_NODES: "eva_nodes"
+      INFLUXDB_BUCKET_EVA_PATTERNS: "eva_patterns"
+
+      # Gemini API (Hermes AI Agent)
+      GEMINI_API_KEY: "${GEMINI_API_KEY}"
+
+      # EVA (Energy Value Architecture) Configuration
+      EVA_PHANTOM_THRESHOLD_W: 5.0
+      EVA_OPTIMAL_WINDOW_HOURS: 4
+      EVA_LEARNING_INTERVAL_H: 6
+      EVA_MAP_PUBLISH_INTERVAL_M: 1
+      EVA_LOCKOUT_HYSTERESIS_MIN: 2
+
+      # System Location
+      LATITUDE: "25.2048"
+      LONGITUDE: "55.2708"
+      TIMEZONE: "Asia/Dubai"
+
+      # Panel Configuration
+      PANEL_EFFICIENCY: "0.215"
+      PANEL_TEMP_COEFF: "-0.0026"
+      PANEL_AREA: "20.0"
+
+      # Thresholds (SOC percentages)
+      SOC_LOCKOUT: "20.0"
+      SOC_WARNING: "40.0"
+      SOC_ADVISORY: "60.0"
+      SOC_ABUNDANCE: "90.0"
+
+      # Notifications
+      NTFY_URL: "https://ntfy.sh/solar_sentinel_guard_alerts"
     restart: unless-stopped

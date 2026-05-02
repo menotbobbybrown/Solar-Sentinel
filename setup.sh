@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "Solar-Sentinel-AIO Setup"
+echo "Solar-Sentinel-AIO v3 Phase 5 - Setup"
 
 # Create necessary directories
 DIRS=(
@@ -40,7 +40,7 @@ if [ -f "/usr/share/solar-sentinel/data/RECOVERY.md" ]; then
 fi
 
 # Ensure all scripts are executable
-chmod +x /data/scripts/*.sh
+chmod +x /data/scripts/*.sh 2>/dev/null || true
 
 # Set proper ownership for directories before services start
 echo "Setting directory permissions..."
@@ -68,9 +68,53 @@ if [ ! -f "/data/node-red/flows.json" ]; then
     cp /etc/node-red/flows.json /data/node-red/flows.json
 fi
 
-if [ ! -f "/data/guard/eva_registry.json" ] && [ -f "/usr/share/solar-sentinel/data/guard/eva_registry.json" ]; then
+# EVA Registry initialization (idempotent)
+if [ ! -f "/data/guard/eva_registry.json" ]; then
     echo "Initializing EVA registry..."
-    cp /usr/share/solar-sentinel/data/guard/eva_registry.json /data/guard/eva_registry.json
+    if [ -f "/usr/share/solar-sentinel/data/guard/eva_registry.json" ]; then
+        cp /usr/share/solar-sentinel/data/guard/eva_registry.json /data/guard/eva_registry.json
+    else
+        # Create default EVA registry
+        cat > /data/guard/eva_registry.json << 'EVAEOF'
+{
+    "washing_machine": {
+        "name": "Washing Machine",
+        "priority": "SHIFTABLE",
+        "ha_entity": "switch.washing_machine"
+    },
+    "dishwasher": {
+        "name": "Dishwasher",
+        "priority": "SHIFTABLE",
+        "ha_entity": "switch.dishwasher"
+    },
+    "water_heater": {
+        "name": "Water Heater",
+        "priority": "LUXURY",
+        "ha_entity": "switch.water_heater"
+    },
+    "air_conditioner": {
+        "name": "Air Conditioner",
+        "priority": "LUXURY",
+        "ha_entity": "switch.air_conditioner"
+    },
+    "ev_charger": {
+        "name": "EV Charger",
+        "priority": "SHIFTABLE",
+        "ha_entity": "switch.ev_charger"
+    },
+    "living_room_tv": {
+        "name": "Living Room TV",
+        "priority": "PHANTOM",
+        "ha_entity": "switch.living_room_tv"
+    },
+    "coffee_maker": {
+        "name": "Coffee Maker",
+        "priority": "PHANTOM",
+        "ha_entity": "switch.coffee_maker"
+    }
+}
+EVAEOF
+    fi
 fi
 
 if [ ! -f "/data/uptime-kuma/monitors.json" ]; then
@@ -79,12 +123,13 @@ if [ ! -f "/data/uptime-kuma/monitors.json" ]; then
     cp /etc/uptime-kuma/monitors.json /data/uptime-kuma/monitors.json
 fi
 
-# Hermes Agent Setup
+# Hermes Agent Setup (idempotent)
 if [ ! -f "/data/agent/hermes_history.json" ]; then
+    echo "Initializing Hermes history..."
     echo "[]" > /data/agent/hermes_history.json
 fi
 
-# Copy hermes_agent.py from template to /data/agent
+# Copy hermes_agent.py from template to /data/agent (idempotent)
 if [ -f "/usr/share/solar-sentinel/data/agent/hermes_agent.py" ]; then
     cp /usr/share/solar-sentinel/data/agent/hermes_agent.py /data/agent/hermes_agent.py
 elif [ -f "/home/engine/project/data/agent/hermes_agent.py" ]; then
@@ -95,11 +140,11 @@ if [ -f "/data/agent/hermes_agent.py" ]; then
     chmod +x /data/agent/hermes_agent.py
 fi
 
-# InfluxDB bucket initialization
+# InfluxDB bucket initialization (idempotent)
 echo "Checking InfluxDB buckets..."
 INFLUX_READY=0
 for i in {1..30}; do
-    if curl -s "http://localhost:8086/health" > /dev/null 2>&1; then
+    if curl -sf "http://localhost:8086/health" > /dev/null 2>&1; then
         echo "InfluxDB is healthy"
         INFLUX_READY=1
         break
@@ -114,8 +159,10 @@ if [ "$INFLUX_READY" = "1" ]; then
     INFLUX_ORG="${INFLUXDB_ORG:-my-org}"
     INFLUX_URL="${INFLUXDB_URL:-http://localhost:8086}"
     
-    # Check if buckets exist, create if missing
-    for bucket in "solar_forecast" "system_state" "eva_nodes" "eva_patterns"; do
+    # All required buckets for Phase 5 - idempotent check and create
+    ALL_BUCKETS=("solar_forecast" "system_state" "eva_nodes" "eva_patterns")
+    
+    for bucket in "${ALL_BUCKETS[@]}"; do
         echo "Checking for $bucket bucket..."
         if ! influx bucket list --token "$INFLUX_TOKEN" --org "$INFLUX_ORG" --host "$INFLUX_URL" 2>/dev/null | grep -q "$bucket"; then
             echo "Creating $bucket bucket..."
@@ -124,7 +171,7 @@ if [ "$INFLUX_READY" = "1" ]; then
                 -H "Authorization: Token $INFLUX_TOKEN" \
                 -H "Content-Type: application/json" \
                 -d "{\"name\":\"$bucket\",\"orgID\":\"$INFLUX_ORG\",\"retentionRules\":[]}" > /dev/null || \
-            echo "Warning: Could not create $bucket bucket"
+            echo "Warning: Could not create $bucket bucket (may already exist)"
         else
             echo "$bucket bucket already exists"
         fi
@@ -140,10 +187,11 @@ if [ ! -d "/data/influxdb/engine" ]; then
 fi
 
 # Check for Gemini API Key
-if [ -z "$GOOGLE_API_KEY" ]; then
-    echo "WARNING: GOOGLE_API_KEY is not set. Hermes AI agent will not function correctly."
+if [ -z "$GEMINI_API_KEY" ] && [ -z "$GOOGLE_API_KEY" ]; then
+    echo "WARNING: GEMINI_API_KEY (or GOOGLE_API_KEY) is not set. Hermes AI agent will not function correctly."
+    echo "Please set your Gemini API key in docker-compose.yml or environment."
 else
-    echo "GOOGLE_API_KEY is set."
+    echo "Gemini API key is configured."
 fi
 
 echo "Setup complete."

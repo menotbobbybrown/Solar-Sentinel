@@ -1,3 +1,6 @@
+# Solar-Sentinel-AIO v3 - Phase 5
+# Gemini API & EVA Energy Map Architecture
+
 # Stage 1: Downloader
 FROM alpine:3.19 AS downloader
 RUN apk add --no-cache curl
@@ -58,7 +61,7 @@ RUN addgroup -S solar && adduser -S solar -G solar
 # Create necessary directories
 RUN mkdir -p /var/log/supervisor /etc/supervisor/conf.d /data /config /var/lib/influxdb2 /var/lib/grafana /mosquitto/data /mosquitto/log
 
-# Copy requirements.txt and install
+# Copy requirements.txt and install Python dependencies
 COPY requirements.txt /tmp/requirements.txt
 # Pin homeassistant to specific version for stability
 ARG HOMEASSISTANT_VERSION=2024.2.1

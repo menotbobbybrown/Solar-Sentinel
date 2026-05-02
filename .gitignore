@@ -1,62 +1,67 @@
-# Data directories
-data/*
-!data/.gitkeep
-!data/scripts/
-!data/homeassistant-defaults/
-!data/RECOVERY.md
-!data/agent/
-!data/agent/hermes_agent.py
-data/agent/hermes_history.json
-!data/guard/
-!data/guard/eva_registry.json
-data/guard/guard_state.json
+# Solar-Sentinel-AIO v3
+# Git ignore patterns
 
-# Logs
+# Data directories (mounted volumes)
+data/
+/data
+
+# Log files
 *.log
-/data/logs/*
-/var/log/supervisor/*
+*.log.*
 
-# Node.js
-node_modules/
-npm-debug.log
-
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-
-# Docker
-.dockerignore
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# IDE
-.idea/
-.vscode/
+# Temporary files
+*.tmp
+*.temp
 *.swp
 *.swo
 
-# Grafana data
-/data/grafana/*
-!/data/grafana/grafana.ini
+# Environment files with secrets
+.env
+.env.local
+.env.production
 
-# InfluxDB data
-/data/influxdb/engine/*
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
 
-# Configuration with secrets (keep templates)
-/config/influxdb/config.yaml
-/secrets/
+# Node modules
+node_modules/
+package-lock.json
+
+# IDE
+.vscode/
+.idea/
+*.iml
+.DS_Store
 
 # Backup files
 *.bak
 *.backup
-/data/backups/*
+*.tar.gz
+*.zip
+backups/
 
-# MQTT/InfluxDB credentials
-.env
-.env.local
-*.env
+# Docker
+.dockerignore
+
+# Monitoring data
+influx_data/
+grafana_data/

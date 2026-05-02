@@ -863,18 +863,62 @@
         "type": "influxdb",
         "uid": "InfluxDB_Solar"
       },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          },
+          "mappings": [],
+          "unit": "watt"
+        },
+        "overrides": []
+      },
       "gridPos": {
         "h": 8,
-        "w": 8,
+        "w": 5,
         "x": 0,
         "y": 28
       },
       "id": 14,
-      "title": "EVA: Node Power Distribution",
+      "options": {
+        "displayLabels": [
+          "name",
+          "percent"
+        ],
+        "legend": {
+          "displayMode": "list",
+          "placement": "right",
+          "showLegend": true
+        },
+        "pieType": "pie",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "title": "Flow by Tier (Power Distribution)",
       "type": "piechart",
       "targets": [
         {
-          "query": "from(bucket: \"eva_nodes\") |> range(start: -1h) |> filter(fn: (r) => r._field == \"power_w\") |> last()",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "InfluxDB_Solar"
+          },
+          "query": "from(bucket: \"eva_nodes\")\n  |> range(start: -1h)\n  |> filter(fn: (r) => r._field == \"power_w\")\n  |> last()\n  |> group(columns: [\"node_id\"])",
           "refId": "A"
         }
       ]
@@ -883,19 +927,88 @@
       "datasource": {
         "type": "influxdb",
         "uid": "InfluxDB_Solar"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "watt"
+        },
+        "overrides": []
       },
       "gridPos": {
         "h": 8,
-        "w": 16,
-        "x": 8,
+        "w": 7,
+        "x": 5,
         "y": 28
       },
       "id": 15,
-      "title": "EVA: Node Power History",
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "title": "Per-Device Consumption",
       "type": "timeseries",
       "targets": [
         {
-          "query": "from(bucket: \"eva_nodes\") |> range(start: -6h) |> filter(fn: (r) => r._field == \"power_w\")",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "InfluxDB_Solar"
+          },
+          "query": "from(bucket: \"eva_nodes\")\n  |> range(start: -6h)\n  |> filter(fn: (r) => r._field == \"power_w\")\n  |> group(columns: [\"node_id\"])",
           "refId": "A"
         }
       ]
@@ -905,60 +1018,224 @@
         "type": "influxdb",
         "uid": "InfluxDB_Solar"
       },
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 0,
-        "y": 36
-      },
-      "id": 16,
-      "title": "Phantom Load Estimate",
-      "type": "stat",
-      "targets": [
-        {
-          "query": "from(bucket: \"eva_patterns\") |> range(start: -24h) |> filter(fn: (r) => r._field == \"avg_w\") |> mean()",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "datasource": {
-        "type": "influxdb",
-        "uid": "InfluxDB_Solar"
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 6,
-        "y": 36
-      },
-      "id": 17,
-      "title": "EVA: Pattern Match",
-      "type": "table",
-      "targets": [
-        {
-          "query": "from(bucket: \"eva_patterns\") |> range(start: -24h) |> last()",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "datasource": {
-        "type": "influxdb",
-        "uid": "InfluxDB_Solar"
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 10
+              },
+              {
+                "color": "orange",
+                "value": 25
+              },
+              {
+                "color": "red",
+                "value": 50
+              }
+            ]
+          },
+          "unit": "watt"
+        },
+        "overrides": []
       },
       "gridPos": {
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 36
+        "y": 28
       },
-      "id": 18,
-      "title": "Efficiency Score",
-      "type": "gauge",
+      "id": 16,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.2.3",
+      "title": "Phantom Waste (W)",
+      "type": "stat",
       "targets": [
         {
-          "query": "from(bucket: \"system_state\") |> range(start: -1h) |> filter(fn: (r) => r._field == \"soc\") |> mean()",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "InfluxDB_Solar"
+          },
+          "query": "from(bucket: \"eva_patterns\")\n  |> range(start: -24h)\n  |> filter(fn: (r) => r._field == \"avg_w\")\n  |> filter(fn: (r) => r._value < 10.0)\n  |> sum()",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "InfluxDB_Solar"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.5
+              },
+              {
+                "color": "green",
+                "value": 2
+              }
+            ]
+          },
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 28
+      },
+      "id": 17,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.2.3",
+      "title": "Monthly Savings ($)",
+      "type": "stat",
+      "targets": [
+        {
+          "datasource": {
+            "type": "influxdb",
+            "uid": "InfluxDB_Solar"
+          },
+          "query": "from(bucket: \"eva_patterns\")\n  |> range(start: -24h)\n  |> filter(fn: (r) => r._field == \"avg_w\")\n  |> filter(fn: (r) => r._value < 10.0)\n  |> sum()\n  |> map(fn: (r) => ({ r with _value: r._value * 24.0 * 30.0 / 1000.0 * 0.15 }))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "InfluxDB_Solar"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 12,
+        "y": 32
+      },
+      "id": 18,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "title": "Scheduled Devices",
+      "type": "timeseries",
+      "targets": [
+        {
+          "datasource": {
+            "type": "influxdb",
+            "uid": "InfluxDB_Solar"
+          },
+          "query": "from(bucket: \"system_state\")\n  |> range(start: -24h)\n  |> filter(fn: (r) => r._measurement == \"eva_map\")\n  |> filter(fn: (r) => r._field == \"phantom_cuts\")",
           "refId": "A"
         }
       ]
@@ -969,7 +1246,8 @@
   "tags": [
     "solar",
     "energy",
-    "battery"
+    "battery",
+    "eva"
   ],
   "templating": {
     "list": []
@@ -993,6 +1271,6 @@
   "timezone": "",
   "title": "Solar Sentinel Dashboard",
   "uid": "solar-sentinel-main",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }
