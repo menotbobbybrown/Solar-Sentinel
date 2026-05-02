@@ -69,6 +69,11 @@ if [ ! -f "/data/node-red/flows.json" ]; then
     cp /etc/node-red/flows.json /data/node-red/flows.json
 fi
 
+if [ ! -f "/data/guard/eva_registry.json" ] && [ -f "/usr/share/solar-sentinel/data/guard/eva_registry.json" ]; then
+    echo "Initializing EVA registry..."
+    cp /usr/share/solar-sentinel/data/guard/eva_registry.json /data/guard/eva_registry.json
+fi
+
 if [ ! -f "/data/uptime-kuma/monitors.json" ]; then
     echo "Initializing Uptime Kuma monitors..."
     mkdir -p /data/uptime-kuma
@@ -127,45 +132,20 @@ if [ "$INFLUX_READY" = "1" ]; then
     INFLUX_URL="${INFLUXDB_URL:-http://localhost:8086}"
     
     # Check if buckets exist, create if missing
-    echo "Checking for solar_forecast bucket..."
-    if ! influx bucket list --token "$INFLUX_TOKEN" --org "$INFLUX_ORG" --host "$INFLUX_URL" 2>/dev/null | grep -q "solar_forecast"; then
-        echo "Creating solar_forecast bucket..."
-        influx bucket create --name solar_forecast --org "$INFLUX_ORG" --token "$INFLUX_TOKEN" --host "$INFLUX_URL" 2>/dev/null || \
-        curl -s -X POST "$INFLUX_URL/api/v2/buckets" \
-            -H "Authorization: Token $INFLUX_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "{\"name\":\"solar_forecast\",\"orgID\":\"$INFLUX_ORG\",\"retentionRules\":[]}" > /dev/null || \
-        echo "Warning: Could not create solar_forecast bucket (may already exist)"
-    else
-        echo "solar_forecast bucket already exists"
-    fi
-    
-    echo "Checking for system_state bucket..."
-    if ! influx bucket list --token "$INFLUX_TOKEN" --org "$INFLUX_ORG" --host "$INFLUX_URL" 2>/dev/null | grep -q "system_state"; then
-        echo "Creating system_state bucket..."
-        influx bucket create --name system_state --org "$INFLUX_ORG" --token "$INFLUX_TOKEN" --host "$INFLUX_URL" 2>/dev/null || \
-        echo "Warning: Could not create system_state bucket (may already exist)"
-    else
-        echo "system_state bucket already exists"
-    fi
-    
-    echo "Checking for eva_nodes bucket..."
-    if ! influx bucket list --token "$INFLUX_TOKEN" --org "$INFLUX_ORG" --host "$INFLUX_URL" 2>/dev/null | grep -q "eva_nodes"; then
-        echo "Creating eva_nodes bucket..."
-        influx bucket create --name eva_nodes --org "$INFLUX_ORG" --token "$INFLUX_TOKEN" --host "$INFLUX_URL" 2>/dev/null || \
-        echo "Warning: Could not create eva_nodes bucket (may already exist)"
-    else
-        echo "eva_nodes bucket already exists"
-    fi
-    
-    echo "Checking for eva_patterns bucket..."
-    if ! influx bucket list --token "$INFLUX_TOKEN" --org "$INFLUX_ORG" --host "$INFLUX_URL" 2>/dev/null | grep -q "eva_patterns"; then
-        echo "Creating eva_patterns bucket..."
-        influx bucket create --name eva_patterns --org "$INFLUX_ORG" --token "$INFLUX_TOKEN" --host "$INFLUX_URL" 2>/dev/null || \
-        echo "Warning: Could not create eva_patterns bucket (may already exist)"
-    else
-        echo "eva_patterns bucket already exists"
-    fi
+    for bucket in "solar_forecast" "system_state" "eva_nodes" "eva_patterns"; do
+        echo "Checking for $bucket bucket..."
+        if ! influx bucket list --token "$INFLUX_TOKEN" --org "$INFLUX_ORG" --host "$INFLUX_URL" 2>/dev/null | grep -q "$bucket"; then
+            echo "Creating $bucket bucket..."
+            influx bucket create --name "$bucket" --org "$INFLUX_ORG" --token "$INFLUX_TOKEN" --host "$INFLUX_URL" 2>/dev/null || \
+            curl -s -X POST "$INFLUX_URL/api/v2/buckets" \
+                -H "Authorization: Token $INFLUX_TOKEN" \
+                -H "Content-Type: application/json" \
+                -d "{\"name\":\"$bucket\",\"orgID\":\"$INFLUX_ORG\",\"retentionRules\":[]}" > /dev/null || \
+            echo "Warning: Could not create $bucket bucket"
+        else
+            echo "$bucket bucket already exists"
+        fi
+    done
 else
     echo "Warning: InfluxDB not ready. Buckets will be created on first run."
 fi

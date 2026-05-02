@@ -663,5 +663,69 @@
         "x": 350,
         "y": 180,
         "wires": []
+    },
+    {
+        "id": "flow_eva_map",
+        "type": "tab",
+        "label": "EVA Energy Map",
+        "disabled": false,
+        "info": ""
+    },
+    {
+        "id": "mqtt_in_eva_map",
+        "type": "mqtt in",
+        "z": "flow_eva_map",
+        "name": "EVA Map In",
+        "topic": "solar/eva/map",
+        "qos": "0",
+        "datatype": "json",
+        "broker": "mqtt_broker_local",
+        "x": 110,
+        "y": 80,
+        "wires": [["ui_template_eva_map"]]
+    },
+    {
+        "id": "ui_template_eva_map",
+        "type": "ui_template",
+        "z": "flow_eva_map",
+        "group": "ui_group_eva_main",
+        "name": "Map View",
+        "order": 1,
+        "width": "12",
+        "height": "10",
+        "format": "<div id=\"eva-map\">\n  <h3>Energy Map</h3>\n  <pre>{{msg.payload | json}}</pre>\n</div>",
+        "storeOutMessages": true,
+        "fwdInMessages": true,
+        "resendOnRefresh": true,
+        "templateScope": "local",
+        "x": 330,
+        "y": 80,
+        "wires": [[]]
+    },
+    {
+        "id": "ui_group_eva_main",
+        "type": "ui_group",
+        "name": "Energy Map Visualizer",
+        "tab": "ui_tab_eva",
+        "order": 1,
+        "disp": true,
+        "width": "12",
+        "collapse": false
+    },
+    {
+        "id": "ui_tab_eva",
+        "type": "ui_tab",
+        "name": "EVA Energy Map",
+        "icon": "map",
+        "order": 6,
+        "disabled": false,
+        "hidden": false
+    },
+    {
+        "id": "flow_device_manager",
+        "type": "tab",
+        "label": "EVA Device Manager",
+        "disabled": false,
+        "info": ""
     }
 ]

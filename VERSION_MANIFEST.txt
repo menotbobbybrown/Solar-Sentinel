@@ -1,5 +1,12 @@
 Solar-Sentinel-AIO Version Manifest
-Phase 4: Hermes Agent Layer
+Phase 5: EVA Energy Map
+
+EVA Features:
+- Energy Visual Analytics (EVA) Registry
+- Phantom Load Detection & Auto-Cut
+- Optimal Energy Window Finder
+- Pattern Learning Engine (learned behavior)
+- Real-time Energy Map (MQTT/Node-RED/Grafana)
 
 Components:
 - ollama: 0.1.27
