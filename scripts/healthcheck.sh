@@ -70,11 +70,5 @@ if command -v supervisorctl >/dev/null 2>&1; then
     fi
 fi
 
-# Ollama API health check
-if ! curl -sf "http://localhost:11434/api/tags" > /dev/null 2>&1; then
-    echo "Health check failed: Ollama API not responding"
-    exit 1
-fi
-
 echo "All services are healthy"
 exit 0

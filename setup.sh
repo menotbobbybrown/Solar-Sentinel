@@ -84,8 +84,10 @@ if [ ! -f "/data/agent/hermes_history.json" ]; then
     echo "[]" > /data/agent/hermes_history.json
 fi
 
-# Copy hermes_agent.py if it exists in the project source
-if [ -f "/home/engine/project/data/agent/hermes_agent.py" ]; then
+# Copy hermes_agent.py from template to /data/agent
+if [ -f "/usr/share/solar-sentinel/data/agent/hermes_agent.py" ]; then
+    cp /usr/share/solar-sentinel/data/agent/hermes_agent.py /data/agent/hermes_agent.py
+elif [ -f "/home/engine/project/data/agent/hermes_agent.py" ]; then
     cp /home/engine/project/data/agent/hermes_agent.py /data/agent/hermes_agent.py
 fi
 

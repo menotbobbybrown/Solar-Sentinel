@@ -89,11 +89,11 @@ Hermes is the natural language interface for Solar-Sentinel-AIO. You can interac
 - *"What's the solar forecast for tomorrow?"*
 - *"Set the battery lockout threshold to 15%."*
 
-### Model Management
-Hermes uses the `hermes-3-llama3.1:8b-q4_K_M` model running on Ollama. 
-- The model unloads after 3 minutes of inactivity to save RAM (`OLLAMA_KEEP_ALIVE=3m`).
-- Check model status: `ollama ps`
-- Manual pull: `ollama pull hermes-3-llama3.1:8b-q4_K_M`
+### Intelligence Engine
+Hermes uses the **Google Gemini API** (Pro model) with 12 native tools for real-time system interaction.
+- Requires `GOOGLE_API_KEY` environment variable.
+- Uses function calling for status, forecast, and control.
+- Integrated with EVA (Energy Value Analysis) for per-device mapping.
 
 ## Monitoring & Alerts
 - **MQTT**: Health metrics are published to `solar/system/health_metrics`.

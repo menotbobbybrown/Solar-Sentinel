@@ -6,8 +6,10 @@ data/*
 !data/RECOVERY.md
 !data/agent/
 !data/agent/hermes_agent.py
+data/agent/hermes_history.json
 !data/guard/
 !data/guard/eva_registry.json
+data/guard/guard_state.json
 
 # Logs
 *.log
