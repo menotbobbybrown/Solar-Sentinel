@@ -148,6 +148,24 @@ if [ "$INFLUX_READY" = "1" ]; then
     else
         echo "system_state bucket already exists"
     fi
+    
+    echo "Checking for eva_nodes bucket..."
+    if ! influx bucket list --token "$INFLUX_TOKEN" --org "$INFLUX_ORG" --host "$INFLUX_URL" 2>/dev/null | grep -q "eva_nodes"; then
+        echo "Creating eva_nodes bucket..."
+        influx bucket create --name eva_nodes --org "$INFLUX_ORG" --token "$INFLUX_TOKEN" --host "$INFLUX_URL" 2>/dev/null || \
+        echo "Warning: Could not create eva_nodes bucket (may already exist)"
+    else
+        echo "eva_nodes bucket already exists"
+    fi
+    
+    echo "Checking for eva_patterns bucket..."
+    if ! influx bucket list --token "$INFLUX_TOKEN" --org "$INFLUX_ORG" --host "$INFLUX_URL" 2>/dev/null | grep -q "eva_patterns"; then
+        echo "Creating eva_patterns bucket..."
+        influx bucket create --name eva_patterns --org "$INFLUX_ORG" --token "$INFLUX_TOKEN" --host "$INFLUX_URL" 2>/dev/null || \
+        echo "Warning: Could not create eva_patterns bucket (may already exist)"
+    else
+        echo "eva_patterns bucket already exists"
+    fi
 else
     echo "Warning: InfluxDB not ready. Buckets will be created on first run."
 fi
