@@ -1,31 +1,172 @@
 Solar-Sentinel-AIO Version Manifest
 Phase 5: EVA Energy Map (Gemini API Transition)
+===============================================
 
-EVA Features:
-- Energy Visual Analytics (EVA) Registry
+# ============================================================================
+# PHASE 5 OVERVIEW
+# ============================================================================
+
+This release transitions from Ollama (local LLM) to Gemini API and introduces
+the EVA (Energy Value Architecture) system for intelligent per-device 
+load management.
+
+# ============================================================================
+# CORE CHANGES
+# ============================================================================
+
+## AI/LLM
+- Removed: Ollama local LLM service
+- Added: Gemini API with google-generativeai==0.4.1
+- Hermes Agent: Gemini 1.5 Pro with 12 Native Tools
+- Function Calling for real-time system control
+
+## EVA Features
+- Energy Value Architecture (EVA) Registry
+- Device Classification: CRITICAL, SHIFTABLE, LUXURY, PHANTOM
 - Phantom Load Detection & Auto-Cut
-- Optimal Energy Window Finder
+- Optimal Energy Window Finder (4-hour sliding window)
 - Pattern Learning Engine (InfluxDB queries)
+- Smart Lockout (SHIFTABLE devices scheduled, not locked)
 - Real-time Energy Map (MQTT/Node-RED/Grafana)
 
-Components:
-- Gemini API (google-generativeai==0.4.1)
-- Hermes Agent: Gemini Pro with 12 Native Tools
-- EVA Map Visualizer (Node-RED)
+# ============================================================================
+# HERMES AGENT - 12 TOOLS
+# ============================================================================
 
-Core Services (Pinned Versions):
-- homeassistant: 2024.2.1
-- influxdb: 2.7.4
-- grafana: 10.2.3
-- mosquitto: 2.0.18
-- node-red: 3.1.3
-- uptime-kuma: 1.23.11
-- open-meteo: 1.2.1
+1. get_system_status    - Check SOC, PV power, guard tier
+2. lock_appliance       - Lock individual device
+3. unlock_appliance     - Unlock individual device
+4. lock_all_appliances  - Bulk lock all devices
+5. unlock_all_appliances - Bulk unlock all devices
+6. get_forecast         - Solar production forecast
+7. set_threshold        - Adjust SOC thresholds
+8. send_notification    - Push notification via ntfy
+9. get_energy_map       - EVA Energy Map snapshot
+10. reschedule_device   - Schedule device for optimal window
+11. classify_device     - Set EVA priority classification
+12. get_waste_analysis  - Analyze phantom loads
 
-Python Dependencies:
-- pvlib: 0.10.3
-- paho-mqtt: 1.6.1
-- influxdb-client: 3.0.0
-- google-generativeai: 0.4.1
-- schedule: 1.2.1
-- requests: 2.31.0
+# ============================================================================
+# MQTT TOPICS (solar/ namespace)
+# ============================================================================
+
+solar/battery/soc          - Battery state of charge
+solar/pv/power             - Solar production in watts
+solar/guard/status         - Guard status (ONLINE/OFFLINE)
+solar/guard/config/*       - Guard threshold configuration
+solar/guard/command        - Guard commands
+solar/forecast/7day         - 7-day forecast summary
+solar/alerts/guard         - Guard alerts and tier changes
+solar/hermes/inbox         - Hermes AI inbox
+solar/hermes/outbox        - Hermes AI outbox
+solar/eva/map              - EVA Energy Map snapshot
+solar/eva/node/*           - EVA node data
+solar/eva/command          - EVA system commands
+solar/eva/optimal_window   - Optimal energy window
+solar/appliance/*          - Appliance lock commands
+
+# ============================================================================
+# EVA DEVICE PRIORITIES
+# ============================================================================
+
+CRITICAL  - Essential devices (refrigerator), never locked
+SHIFTABLE - Can be scheduled for optimal windows (washer, EV)
+LUXURY    - Comfort devices, locked in WARNING (AC, water heater)
+PHANTOM   - Vampire loads, auto-cut when OFF but drawing power
+
+# ============================================================================
+# INFLUXDB BUCKETS
+# ============================================================================
+
+solar_forecast   - Solar production forecasts
+system_state     - System state metrics
+eva_nodes        - EVA device node data
+eva_patterns     - Learned energy patterns
+
+# ============================================================================
+# CORE SERVICES (Pinned Versions)
+# ============================================================================
+
+homeassistant: 2024.2.1
+influxdb: 2.7.4
+grafana: 10.2.3
+mosquitto: 2.0.18
+node-red: 3.1.3
+uptime-kuma: 1.23.11
+open-meteo: 1.2.1
+
+# ============================================================================
+# PYTHON DEPENDENCIES (Phase 5 - Strictly Pinned)
+# ============================================================================
+
+google-generativeai: 0.4.1
+protobuf: 4.25.2
+google-api-core: 2.16.0
+google-auth: 2.27.0
+pvlib: 0.10.3
+paho-mqtt: 1.6.1
+influxdb-client: 3.0.0
+pandas: 2.2.0
+numpy: 1.26.4
+pydantic: 2.6.1
+schedule: 1.2.1
+requests: 2.31.0
+
+# ============================================================================
+# ENVIRONMENT VARIABLES
+# ============================================================================
+
+GEMINI_API_KEY          - Gemini API key for Hermes AI
+EVA_PHANTOM_THRESHOLD_W - Phantom load threshold (default: 5.0W)
+EVA_OPTIMAL_WINDOW_HOURS - Optimal window duration (default: 4h)
+EVA_LEARNING_INTERVAL_H - Pattern learning interval (default: 6h)
+EVA_MAP_PUBLISH_INTERVAL_M - Map update interval (default: 1m)
+SOC_LOCKOUT            - Lockout threshold (default: 20%)
+SOC_WARNING            - Warning threshold (default: 40%)
+SOC_ADVISORY           - Advisory threshold (default: 60%)
+SOC_ABUNDANCE          - Abundance threshold (default: 90%)
+
+# ============================================================================
+# NODE-RED FLOWS
+# ============================================================================
+
+Flow 1: Solar Live Dashboard
+Flow 2: Appliance Lock Status Panel
+Flow 3: Live Threshold Editor
+Flow 4: Guard Decision Log
+Flow 5: Hermes Chat Interface (NEW)
+Flow 6: EVA Live Energy Map (NEW)
+Flow 7: EVA Device Manager (NEW)
+
+# ============================================================================
+# GRAFANA DASHBOARD - EVA ENERGY MAP ROW
+# ============================================================================
+
+Panel 1: Flow by Tier (Pie Chart)
+Panel 2: Per-Device Consumption (Time Series)
+Panel 3: Phantom Waste (Stat)
+Panel 4: Monthly Savings (Stat)
+Panel 5: Scheduled Devices (Time Series)
+
+# ============================================================================
+# HOMEPAGE ASSISTANT AUTOMATIONS (NEW)
+# ============================================================================
+
+eva_window_arrived        - Optimal window started
+eva_high_phantom_detected - Multiple phantom loads
+eva_device_scheduled      - Device scheduled
+eva_tier_lockout_warning  - Lockout with scheduled devices
+eva_recommendations_alert - New recommendations available
+hermes_status_online      - Hermes online status
+hermes_response_received   - Hermes response received
+
+# ============================================================================
+# SCHEDULED EVA TASKS
+# ============================================================================
+
+Every 1 minute:  Publish Energy Map
+Every 1 hour:   Run Phantom Cut
+Every 6 hours:  Find Optimal Window, Pattern Learning
+Daily at 02:00: Pattern Learning
+Every 5 minutes: Decision Engine
+Every hour:     Update Forecast

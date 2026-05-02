@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
+"""
+Solar-Sentinel-AIO v3 Phase 5
+Hermes AI Agent - Gemini API with Function Calling
+12 Native Tools for Energy Management and EVA Control
+"""
+
 import os
 import sys
 import json
 import logging
-import threading
-import time
-from datetime import datetime, timedelta
+from datetime import datetime
+from pathlib import Path
 import paho.mqtt.client as mqtt
 import google.generativeai as genai
+from google.generativeai import types
 from influxdb_client import InfluxDBClient
 
 # Configure logging
@@ -20,30 +26,41 @@ logging.basicConfig(
 )
 logger = logging.getLogger("HermesAgent")
 
-# Constants
+# MQTT Configuration
 MQTT_BROKER = os.getenv("MQTT_BROKER", "localhost")
 MQTT_PORT = int(os.getenv("MQTT_PORT", 1883))
 MQTT_USER = os.getenv("MQTT_USER", None)
 MQTT_PASS = os.getenv("MQTT_PASS", None)
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
-# InfluxDB Constants
+# Gemini API Configuration
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+
+# InfluxDB Configuration
 INFLUX_URL = os.getenv("INFLUXDB_URL", "http://localhost:8086")
 INFLUX_TOKEN = os.getenv("INFLUXDB_TOKEN", "my-token")
 INFLUX_ORG = os.getenv("INFLUXDB_ORG", "my-org")
 
+# MQTT Topics
 INBOX_TOPIC = "solar/hermes/inbox"
 OUTBOX_TOPIC = "solar/hermes/outbox"
 STATUS_TOPIC = "solar/hermes/status"
+
+# File paths
 GUARD_STATE_FILE = "/data/guard/guard_state.json"
 EVA_REGISTRY_FILE = "/data/guard/eva_registry.json"
+HERMES_HISTORY_FILE = "/data/agent/hermes_history.json"
 
-if not GOOGLE_API_KEY:
-    logger.error("GOOGLE_API_KEY not set. Hermes will not be able to function.")
+if not GEMINI_API_KEY:
+    logger.error("GEMINI_API_KEY not set. Hermes will not be able to function.")
+    sys.exit(1)
 
-genai.configure(api_key=GOOGLE_API_KEY)
+# Configure Gemini
+genai.configure(api_key=GEMINI_API_KEY)
+
 
 class HermesAgent:
+    """Hermes AI Agent using Gemini API with Function Calling"""
+    
     def __init__(self):
         self.mqtt_client = mqtt.Client(client_id="hermes_agent")
         if MQTT_USER and MQTT_PASS:
@@ -53,143 +70,340 @@ class HermesAgent:
         self.mqtt_client.on_message = self.on_message
         
         self.influx_client = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
-        
         self.model = None
-        self.chat = None
         self.available_functions = {}
         self.setup_gemini()
+        logger.info("Hermes Agent initialized")
 
     def setup_gemini(self):
-        # 1. get_system_status
-        def get_system_status():
+        """Define all 12 tools for function calling"""
+        
+        # Tool 1: get_system_status
+        def get_system_status() -> types.FunctionDeclaration:
             """Returns current system status including SOC, PV watts, and Energy Guard tier."""
             state = self.load_json_file(GUARD_STATE_FILE)
             return {
                 "soc": state.get("current_soc"),
                 "pv_watts": state.get("current_watts"),
                 "guard_tier": state.get("current_tier"),
-                "timestamp": state.get("timestamp")
+                "forecast_daily_kwh": state.get("forecast_daily_kwh", {}),
+                "timestamp": state.get("timestamp"),
+                "soc_lockout": state.get("config", {}).get("soc_lockout"),
+                "soc_warning": state.get("config", {}).get("soc_warning")
             }
-
-        # 2. get_solar_forecast
-        def get_solar_forecast():
-            """Returns a 3-day solar production forecast in kWh."""
+        
+        # Tool 2: lock_appliance
+        def lock_appliance(device_id: str) -> dict:
+            """Locks a specific appliance via EVA. Device will be turned off during low battery conditions."""
+            topic = f"solar/appliance/{device_id}/lock"
+            self.mqtt_client.publish(topic, "LOCK", retain=True)
+            self.save_to_history(f"Locked appliance: {device_id}")
+            return {"status": "success", "action": "lock", "device_id": device_id}
+        
+        # Tool 3: unlock_appliance
+        def unlock_appliance(device_id: str) -> dict:
+            """Unlocks a specific appliance via EVA. Device will be allowed to run normally."""
+            topic = f"solar/appliance/{device_id}/lock"
+            self.mqtt_client.publish(topic, "UNLOCK", retain=True)
+            self.save_to_history(f"Unlocked appliance: {device_id}")
+            return {"status": "success", "action": "unlock", "device_id": device_id}
+        
+        # Tool 4: lock_all_appliances
+        def lock_all_appliances() -> dict:
+            """Locks all appliances in the EVA registry. Use during critical battery conditions."""
+            registry = self.load_json_file(EVA_REGISTRY_FILE)
+            locked = []
+            for device_id in registry.keys():
+                topic = f"solar/appliance/{device_id}/lock"
+                self.mqtt_client.publish(topic, "LOCK", retain=True)
+                locked.append(device_id)
+            self.save_to_history(f"Locked all appliances: {locked}")
+            return {"status": "success", "action": "lock_all", "devices": locked}
+        
+        # Tool 5: unlock_all_appliances
+        def unlock_all_appliances() -> dict:
+            """Unlocks all appliances in the EVA registry. Use when battery is restored."""
+            registry = self.load_json_file(EVA_REGISTRY_FILE)
+            unlocked = []
+            for device_id in registry.keys():
+                topic = f"solar/appliance/{device_id}/lock"
+                self.mqtt_client.publish(topic, "UNLOCK", retain=True)
+                unlocked.append(device_id)
+            self.save_to_history(f"Unlocked all appliances: {unlocked}")
+            return {"status": "success", "action": "unlock_all", "devices": unlocked}
+        
+        # Tool 6: get_forecast
+        def get_forecast(days: int = 3) -> dict:
+            """Returns solar production forecast in kWh. Default is 3 days."""
             state = self.load_json_file(GUARD_STATE_FILE)
             forecast = state.get("forecast_daily_kwh", {})
-            # Keep only next 3 days
-            sorted_keys = sorted(forecast.keys())[:3]
+            sorted_keys = sorted(forecast.keys())[:days]
             return {k: forecast[k] for k in sorted_keys}
-
-        # 3. toggle_device
-        def toggle_device(device_id: str, state: str):
-            """Controls Home Assistant switches. device_id is the entity ID, state is 'ON' or 'OFF'."""
-            topic = f"solar/switch/{device_id}/set"
-            self.mqtt_client.publish(topic, state.upper(), retain=False)
-            return f"Command sent: Set {device_id} to {state}"
-
-        # 4. lock_device
-        def lock_device(device_id: str, action: str):
-            """Triggers EVA locking/unlocking for a device. action is 'LOCK' or 'UNLOCK'."""
-            topic = f"solar/appliance/{device_id}/lock"
-            self.mqtt_client.publish(topic, action.upper(), retain=True)
-            return f"EVA {action} command sent for {device_id}"
-
-        # 5. trigger_eva_map
-        def trigger_eva_map():
-            """Forces an immediate update and publication of the Energy Map."""
-            self.mqtt_client.publish("solar/eva/command", "PUBLISH_MAP")
-            return "Energy Map update triggered."
-
-        # 6. trigger_eva_optimize
-        def trigger_eva_optimize():
-            """Starts the EVA schedule optimization process to find the best window for heavy loads."""
-            self.mqtt_client.publish("solar/eva/command", "EVA_OPTIMIZE")
-            return "EVA Optimization process started."
-
-        # 7. trigger_eva_learn
-        def trigger_eva_learn():
-            """Starts the pattern learning engine to analyze historical device usage."""
-            self.mqtt_client.publish("solar/eva/command", "EVA_LEARN")
-            return "EVA Pattern Learning started."
-
-        # 8. cut_phantom_loads
-        def cut_phantom_loads():
-            """Triggers an immediate check and cut of detected phantom loads."""
-            self.mqtt_client.publish("solar/eva/command", "EVA_PHANTOM_CUT")
-            return "Phantom load cut command sent."
-
-        # 9. get_eva_registry
-        def get_eva_registry():
-            """Returns the current EVA device registry including priorities and classifications."""
-            return self.load_json_file(EVA_REGISTRY_FILE)
-
-        # 10. update_device_priority
-        def update_device_priority(device_id: str, priority: str):
-            """Updates the priority of a device in the EVA registry. priority can be 'PHANTOM', 'LUXURY', or 'SHIFTABLE'."""
+        
+        # Tool 7: set_threshold
+        def set_threshold(threshold_type: str, value: float) -> dict:
+            """Sets a SOC threshold value. Types: soc_lockout, soc_warning, soc_advisory, soc_abundance."""
+            valid_types = ["soc_lockout", "soc_warning", "soc_advisory", "soc_abundance"]
+            if threshold_type not in valid_types:
+                return {"status": "error", "message": f"Invalid threshold type. Use: {valid_types}"}
+            
+            topic = f"solar/guard/config/{threshold_type}"
+            self.mqtt_client.publish(topic, str(value), retain=True)
+            self.save_to_history(f"Set {threshold_type} to {value}")
+            return {"status": "success", "threshold_type": threshold_type, "value": value}
+        
+        # Tool 8: send_notification
+        def send_notification(message: str, priority: str = "default", tags: str = "") -> dict:
+            """Sends a push notification via ntfy.sh."""
+            import requests
+            NTFY_URL = os.getenv("NTFY_URL", "https://ntfy.sh/solar_sentinel_guard_alerts")
+            try:
+                requests.post(NTFY_URL, data=message, headers={
+                    "Title": "Solar Sentinel - Hermes",
+                    "Priority": priority,
+                    "Tags": tags
+                }, timeout=5)
+                return {"status": "sent", "message": message}
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+        
+        # Tool 9: get_energy_map
+        def get_energy_map() -> dict:
+            """Returns the current EVA Energy Map snapshot including all nodes and system status."""
+            topic = "solar/eva/command"
+            self.mqtt_client.publish(topic, "PUBLISH_MAP", retain=True)
+            
+            # Also read from state file
+            state = self.load_json_file(GUARD_STATE_FILE)
+            return {
+                "timestamp": datetime.now().isoformat(),
+                "system": {
+                    "soc": state.get("current_soc"),
+                    "tier": state.get("current_tier"),
+                    "pv_watts": state.get("current_watts")
+                },
+                "nodes": state.get("eva", {}).get("nodes", {}),
+                "phantom_cuts_total": state.get("eva", {}).get("phantom_cuts_performed", 0),
+                "optimal_window": state.get("eva", {}).get("last_optimal_window")
+            }
+        
+        # Tool 10: reschedule_device
+        def reschedule_device(device_id: str, new_schedule: str) -> dict:
+            """Schedules a device for a specific time window. new_schedule should be ISO format datetime."""
+            topic = f"solar/eva/device/{device_id}/schedule"
+            payload = json.dumps({"device_id": device_id, "scheduled_time": new_schedule})
+            self.mqtt_client.publish(topic, payload, retain=True)
+            self.save_to_history(f"Rescheduled {device_id} to {new_schedule}")
+            return {"status": "success", "device_id": device_id, "scheduled_time": new_schedule}
+        
+        # Tool 11: classify_device
+        def classify_device(device_id: str, priority: str) -> dict:
+            """Classifies a device with EVA priority. Priority: CRITICAL, SHIFTABLE, LUXURY, PHANTOM."""
+            valid_priorities = ["CRITICAL", "SHIFTABLE", "LUXURY", "PHANTOM"]
+            if priority not in valid_priorities:
+                return {"status": "error", "message": f"Invalid priority. Use: {valid_priorities}"}
+            
             registry = self.load_json_file(EVA_REGISTRY_FILE)
             if device_id in registry:
-                registry[device_id]["priority"] = priority.upper()
+                registry[device_id]["priority"] = priority
                 self.save_json_file(EVA_REGISTRY_FILE, registry)
-                # Notify Guard to reload
                 self.mqtt_client.publish("solar/eva/command", "RELOAD_REGISTRY")
-                return f"Updated {device_id} priority to {priority}."
-            return f"Device {device_id} not found in registry."
-
-        # 11. get_health_status
-        def get_health_status():
-            """Returns the latest system health metrics, including SSD, disk, and service status."""
-            log_path = "/data/logs/health.log"
-            if os.path.exists(log_path):
-                try:
-                    with open(log_path, 'r') as f:
-                        lines = f.readlines()
-                        if lines:
-                            return {"last_check": lines[-1].strip()}
-                except Exception as e:
-                    logger.error(f"Error reading health log: {e}")
-            return {"status": "Operational", "details": "All services running nominal."}
-
-        # 12. get_energy_usage_summary
-        def get_energy_usage_summary():
-            """Returns a 24-hour energy usage summary from InfluxDB."""
-            query = f'from(bucket: "system_state") |> range(start: -24h) |> filter(fn: (r) => r["_field"] == "load_watts") |> aggregateWindow(every: 1h, fn: mean, createEmpty: false) |> yield(name: "mean")'
+                self.save_to_history(f"Classified {device_id} as {priority}")
+                return {"status": "success", "device_id": device_id, "priority": priority}
+            return {"status": "error", "message": f"Device {device_id} not found in registry"}
+        
+        # Tool 12: get_waste_analysis
+        def get_waste_analysis() -> dict:
+            """Analyzes energy waste patterns from InfluxDB including phantom loads and inefficient usage."""
+            query = '''
+            from(bucket: "eva_patterns")
+              |> range(start: -24h)
+              |> filter(fn: (r) => r["_measurement"] == "eva_patterns")
+              |> filter(fn: (r) => r["_field"] == "avg_w")
+              |> mean()
+            '''
             try:
                 tables = self.influx_client.query_api().query(query)
-                results = []
+                phantom_loads = []
+                total_waste_w = 0.0
+                
                 for table in tables:
                     for record in table.records:
-                        results.append({"time": record.get_time().isoformat(), "avg_watts": record.get_value()})
-                return results
+                        avg_w = record.get_value()
+                        node_id = record.values.get("node_id", "unknown")
+                        
+                        # Consider < 10W as potential phantom load
+                        if avg_w < 10.0:
+                            phantom_loads.append({
+                                "node_id": node_id,
+                                "avg_watts": round(avg_w, 2),
+                                "daily_kwh": round(avg_w * 24 / 1000, 3),
+                                "monthly_cost_estimate": round(avg_w * 24 * 30 / 1000 * 0.15, 2)
+                            })
+                            total_waste_w += avg_w
+                
+                return {
+                    "phantom_loads": phantom_loads,
+                    "total_phantom_watts": round(total_waste_w, 2),
+                    "daily_waste_kwh": round(total_waste_w * 24 / 1000, 3),
+                    "monthly_cost_estimate_usd": round(total_waste_w * 24 * 30 / 1000 * 0.15, 2),
+                    "timestamp": datetime.now().isoformat()
+                }
             except Exception as e:
-                logger.error(f"Error querying InfluxDB: {e}")
-                return {"error": "Could not retrieve usage summary."}
+                logger.error(f"Error querying waste analysis: {e}")
+                return {"status": "error", "message": str(e)}
 
+        # Map functions to tool specs for Gemini
         self.available_functions = {
             "get_system_status": get_system_status,
-            "get_solar_forecast": get_solar_forecast,
-            "toggle_device": toggle_device,
-            "lock_device": lock_device,
-            "trigger_eva_map": trigger_eva_map,
-            "trigger_eva_optimize": trigger_eva_optimize,
-            "trigger_eva_learn": trigger_eva_learn,
-            "cut_phantom_loads": cut_phantom_loads,
-            "get_eva_registry": get_eva_registry,
-            "update_device_priority": update_device_priority,
-            "get_health_status": get_health_status,
-            "get_energy_usage_summary": get_energy_usage_summary
+            "lock_appliance": lock_appliance,
+            "unlock_appliance": unlock_appliance,
+            "lock_all_appliances": lock_all_appliances,
+            "unlock_all_appliances": unlock_all_appliances,
+            "get_forecast": get_forecast,
+            "set_threshold": set_threshold,
+            "send_notification": send_notification,
+            "get_energy_map": get_energy_map,
+            "reschedule_device": reschedule_device,
+            "classify_device": classify_device,
+            "get_waste_analysis": get_waste_analysis
         }
-
-        self.model = genai.GenerativeModel(
-            model_name='gemini-1.0-pro',
-            tools=list(self.available_functions.values())
-        )
-        self.chat = self.model.start_chat()
         
-        # System instruction for version 0.4.1 (sent as first message)
-        try:
-            self.chat.send_message("You are Hermes, the AI agent for Solar-Sentinel-AIO v3. You manage the energy system, EVA (Energy Value Analysis), and device control. Use tools to provide real-time data and execute commands. Be concise and professional.")
-        except Exception as e:
-            logger.error(f"Error sending system prompt: {e}")
+        # Create tool specifications
+        tools = {
+            "function_declarations": [
+                {
+                    "name": "get_system_status",
+                    "description": "Returns current system status including SOC, PV watts, and Energy Guard tier. Use this to check battery state and current power production.",
+                    "parameters": {"type": "object", "properties": {}}
+                },
+                {
+                    "name": "lock_appliance",
+                    "description": "Locks a specific appliance via EVA. Device will be turned off during low battery conditions. Use when you need to manually lock a device.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "device_id": {"type": "string", "description": "The device identifier (e.g., 'washing_machine', 'ev_charger')"}
+                        },
+                        "required": ["device_id"]
+                    }
+                },
+                {
+                    "name": "unlock_appliance",
+                    "description": "Unlocks a specific appliance via EVA. Device will be allowed to run normally. Use when battery is restored.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "device_id": {"type": "string", "description": "The device identifier"}
+                        },
+                        "required": ["device_id"]
+                    }
+                },
+                {
+                    "name": "lock_all_appliances",
+                    "description": "Locks all appliances in the EVA registry. Use during critical battery conditions like LOCKOUT tier.",
+                    "parameters": {"type": "object", "properties": {}}
+                },
+                {
+                    "name": "unlock_all_appliances",
+                    "description": "Unlocks all appliances in the EVA registry. Use when battery is restored to normal levels.",
+                    "parameters": {"type": "object", "properties": {}}
+                },
+                {
+                    "name": "get_forecast",
+                    "description": "Returns solar production forecast in kWh for the upcoming days.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "days": {"type": "integer", "description": "Number of days to forecast (default: 3)", "default": 3}
+                        }
+                    }
+                },
+                {
+                    "name": "set_threshold",
+                    "description": "Sets a SOC threshold value for Energy Guard decisions.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "threshold_type": {"type": "string", "description": "Type: soc_lockout, soc_warning, soc_advisory, soc_abundance"},
+                            "value": {"type": "number", "description": "Threshold percentage value"}
+                        },
+                        "required": ["threshold_type", "value"]
+                    }
+                },
+                {
+                    "name": "send_notification",
+                    "description": "Sends a push notification via ntfy.sh to alert the user.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "message": {"type": "string", "description": "Notification message text"},
+                            "priority": {"type": "string", "description": "Priority level: low, default, urgent", "default": "default"},
+                            "tags": {"type": "string", "description": "ntfy tags (e.g., 'zap', 'warning')", "default": ""}
+                        },
+                        "required": ["message"]
+                    }
+                },
+                {
+                    "name": "get_energy_map",
+                    "description": "Returns the current EVA Energy Map snapshot including all nodes, system status, and optimal windows.",
+                    "parameters": {"type": "object", "properties": {}}
+                },
+                {
+                    "name": "reschedule_device",
+                    "description": "Schedules a device for a specific time window using the optimal energy window finder.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "device_id": {"type": "string", "description": "The device identifier"},
+                            "new_schedule": {"type": "string", "description": "ISO format datetime for scheduled start (e.g., '2024-02-15T14:00:00')"}
+                        },
+                        "required": ["device_id", "new_schedule"]
+                    }
+                },
+                {
+                    "name": "classify_device",
+                    "description": "Classifies a device with EVA priority. CRITICAL: always on, SHIFTABLE: can be moved, LUXURY: comfort item, PHANTOM: vampire load.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "device_id": {"type": "string", "description": "The device identifier"},
+                            "priority": {"type": "string", "description": "Priority: CRITICAL, SHIFTABLE, LUXURY, PHANTOM"}
+                        },
+                        "required": ["device_id", "priority"]
+                    }
+                },
+                {
+                    "name": "get_waste_analysis",
+                    "description": "Analyzes energy waste patterns from InfluxDB including phantom loads and inefficient usage. Returns potential savings.",
+                    "parameters": {"type": "object", "properties": {}}
+                }
+            ]
+        }
+        
+        # Initialize Gemini model with tools
+        self.model = genai.GenerativeModel(
+            model_name='gemini-1.5-pro',
+            tools=tools
+        )
+        
+        # System instruction
+        self.system_instruction = """You are Hermes, the AI agent for Solar-Sentinel-AIO v3.
+You manage the energy system, EVA (Energy Value Analysis), and device control.
+You have access to 12 tools for system management:
+- get_system_status: Check battery SOC, PV power, guard tier
+- lock_appliance/unlock_appliance: Control individual devices
+- lock_all_appliances/unlock_all_appliances: Bulk device control
+- get_forecast: Solar production forecasts
+- set_threshold: Adjust guard thresholds
+- send_notification: Push alerts to user
+- get_energy_map: EVA energy map snapshot
+- reschedule_device: Schedule for optimal window
+- classify_device: Set EVA priority
+- get_waste_analysis: Analyze phantom loads
+
+Be concise, professional, and proactive. Suggest energy-saving actions when appropriate.
+Always use tools to get real-time data before making recommendations."""
 
     def load_json_file(self, filepath):
         if os.path.exists(filepath):
@@ -207,6 +421,22 @@ class HermesAgent:
         except Exception as e:
             logger.error(f"Error saving {filepath}: {e}")
 
+    def save_to_history(self, action):
+        """Save conversation/action to history for learning"""
+        try:
+            history = self.load_json_file(HERMES_HISTORY_FILE)
+            if not isinstance(history, list):
+                history = []
+            history.append({
+                "timestamp": datetime.now().isoformat(),
+                "action": action
+            })
+            # Keep last 100 entries
+            history = history[-100:]
+            self.save_json_file(HERMES_HISTORY_FILE, history)
+        except Exception as e:
+            logger.error(f"Error saving to history: {e}")
+
     def on_connect(self, client, userdata, flags, rc):
         if rc == 0:
             logger.info("Connected to MQTT Broker")
@@ -220,40 +450,61 @@ class HermesAgent:
             payload = msg.payload.decode()
             logger.info(f"Received message: {payload}")
             
-            response = self.chat.send_message(payload)
+            # Start chat session with system instruction
+            chat = self.model.start_chat()
+            chat.send_message(self.system_instruction)
             
-            # Handle function calls manually for SDK 0.4.1
+            # Send user message
+            response = chat.send_message(payload)
+            
+            # Handle function calls
             while True:
                 has_function_call = False
-                if response.candidates[0].content.parts:
+                if response.candidates and response.candidates[0].content.parts:
                     for part in response.candidates[0].content.parts:
-                        if part.function_call:
+                        if hasattr(part, 'function_call') and part.function_call:
                             has_function_call = True
                             fn_name = part.function_call.name
-                            fn_args = {k: v for k, v in part.function_call.args.items()}
+                            fn_args = {k: v for k, v in part.function_call.args.items()} if part.function_call.args else {}
                             logger.info(f"Calling function: {fn_name} with args {fn_args}")
                             
                             if fn_name in self.available_functions:
-                                result = self.available_functions[fn_name](**fn_args)
-                                logger.info(f"Function result: {result}")
-                                response = self.chat.send_message(
-                                    genai.protos.Content(
-                                        parts=[genai.protos.Part(
-                                            function_response=genai.protos.FunctionResponse(
-                                                name=fn_name,
-                                                response={'result': result}
-                                            )
-                                        )]
+                                try:
+                                    result = self.available_functions[fn_name](**fn_args)
+                                    logger.info(f"Function result: {result}")
+                                    
+                                    # Send function response back to Gemini
+                                    response = chat.send_message(
+                                        types.Content(
+                                            parts=[types.Part(
+                                                function_response=types.FunctionResponse(
+                                                    name=fn_name,
+                                                    response={"result": result}
+                                                )
+                                            )]
+                                        )
                                     )
-                                )
+                                except TypeError:
+                                    # Handle functions with no required args
+                                    result = self.available_functions[fn_name]()
+                                    response = chat.send_message(
+                                        types.Content(
+                                            parts=[types.Part(
+                                                function_response=types.FunctionResponse(
+                                                    name=fn_name,
+                                                    response={"result": result}
+                                                )
+                                            )]
+                                        )
+                                    )
                             else:
                                 logger.error(f"Function {fn_name} not found")
-                                response = self.chat.send_message(
-                                    genai.protos.Content(
-                                        parts=[genai.protos.Part(
-                                            function_response=genai.protos.FunctionResponse(
+                                response = chat.send_message(
+                                    types.Content(
+                                        parts=[types.Part(
+                                            function_response=types.FunctionResponse(
                                                 name=fn_name,
-                                                response={'result': 'Error: Function not found'}
+                                                response={"error": f"Function {fn_name} not found"}
                                             )
                                         )]
                                     )
@@ -262,6 +513,7 @@ class HermesAgent:
                 if not has_function_call:
                     break
             
+            # Get final response text
             try:
                 final_text = response.text
             except Exception:
@@ -272,10 +524,15 @@ class HermesAgent:
                 "timestamp": datetime.now().isoformat()
             }
             client.publish(OUTBOX_TOPIC, json.dumps(out_msg))
-            logger.info(f"Sent response: {final_text}")
+            self.save_to_history(f"User query: {payload[:100]}... Response: {final_text[:100]}...")
+            logger.info(f"Sent response: {final_text[:200]}...")
+            
         except Exception as e:
             logger.error(f"Error processing message: {e}")
-            client.publish(OUTBOX_TOPIC, json.dumps({"error": str(e), "timestamp": datetime.now().isoformat()}))
+            client.publish(OUTBOX_TOPIC, json.dumps({
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
+            }))
 
     def run(self):
         while True:
@@ -286,6 +543,8 @@ class HermesAgent:
                 logger.error(f"MQTT connection error: {e}. Retrying in 5s...")
                 time.sleep(5)
 
+
 if __name__ == "__main__":
+    import time
     agent = HermesAgent()
     agent.run()

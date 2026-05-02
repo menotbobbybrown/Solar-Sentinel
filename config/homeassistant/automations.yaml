@@ -1,3 +1,12 @@
+# =============================================================================
+# Solar-Sentinel-AIO v3 Phase 5 - Home Assistant Automations
+# Includes standard energy guard + EVA-specific automations
+# =============================================================================
+
+# =============================================================================
+# SECTION 1: APPLIANCE LOCK AUTOMATIONS (EVA-Aware)
+# =============================================================================
+
 - id: energy_guard_lock_washing_machine
   alias: "Energy Guard: Lock Washing Machine"
   trigger:
@@ -47,7 +56,7 @@
   alias: "Energy Guard: Lock AC Unit"
   trigger:
     - platform: mqtt
-      topic: "solar/appliance/ac_unit/lock"
+      topic: "solar/appliance/air_conditioner/lock"
   action:
     - service: >
         {% if trigger.payload == 'LOCK' %}
@@ -56,7 +65,7 @@
           switch.turn_on
         {% endif %}
       target:
-        entity_id: switch.ac_unit
+        entity_id: switch.air_conditioner
 
 - id: energy_guard_lock_ev_charger
   alias: "Energy Guard: Lock EV Charger"
@@ -73,6 +82,40 @@
       target:
         entity_id: switch.ev_charger
 
+- id: energy_guard_lock_living_room_tv
+  alias: "Energy Guard: Lock Living Room TV"
+  trigger:
+    - platform: mqtt
+      topic: "solar/appliance/living_room_tv/lock"
+  action:
+    - service: >
+        {% if trigger.payload == 'LOCK' %}
+          switch.turn_off
+        {% else %}
+          switch.turn_on
+        {% endif %}
+      target:
+        entity_id: switch.living_room_tv
+
+- id: energy_guard_lock_coffee_maker
+  alias: "Energy Guard: Lock Coffee Maker"
+  trigger:
+    - platform: mqtt
+      topic: "solar/appliance/coffee_maker/lock"
+  action:
+    - service: >
+        {% if trigger.payload == 'LOCK' %}
+          switch.turn_off
+        {% else %}
+          switch.turn_on
+        {% endif %}
+      target:
+        entity_id: switch.coffee_maker
+
+# =============================================================================
+# SECTION 2: GUARD ALERT AUTOMATIONS
+# =============================================================================
+
 - id: energy_guard_alert_notification
   alias: "Energy Guard: Alert Notification"
   trigger:
@@ -81,7 +124,7 @@
   action:
     - service: notify.persistent_notification
       data:
-        title: "Solar Sentinel: {{ value_json.priority | upper }}"
+        title: "Solar Sentinel: {{ value_json.new_tier | upper if value_json.new_tier else 'ALERT' }}"
         message: "{{ value_json.message }}"
         notification_id: "energy_guard_alert"
 
@@ -145,6 +188,10 @@
         message: "{{ trigger.payload }}"
         notification_id: "usb_warning"
 
+# =============================================================================
+# SECTION 3: EVA ALERT AUTOMATIONS
+# =============================================================================
+
 - id: eva_map_update
   alias: "EVA: Map Update Notification"
   trigger:
@@ -154,7 +201,7 @@
     - service: notify.persistent_notification
       data:
         title: "Energy Map Updated"
-        message: "PV Watts: {{ value_json.system.pv_watts }}W, SOC: {{ value_json.system.soc }}%"
+        message: "PV: {{ value_json.system.pv_watts }}W, SOC: {{ value_json.system.soc }}%, Tier: {{ value_json.system.tier }}"
         notification_id: "eva_map_status"
 
 - id: eva_phantom_alert
@@ -181,7 +228,7 @@
     - service: notify.persistent_notification
       data:
         title: "Optimal Energy Window"
-        message: "Best time to use power: {{ value_json.start_time }} to {{ value_json.end_time }}"
+        message: "Best time to use power: {{ value_json.start_time }} to {{ value_json.end_time }} ({{ value_json.predicted_yield_wh }}Wh predicted)"
         notification_id: "eva_optimal_window"
 
 - id: eva_pattern_match
@@ -198,3 +245,128 @@
         title: "EVA: New Pattern Learned"
         message: "{{ value_json.message }}"
         notification_id: "eva_pattern_alert"
+
+# =============================================================================
+# SECTION 4: EVA NEW AUTOMATIONS (Phase 5)
+# =============================================================================
+
+- id: eva_window_arrived
+  alias: "EVA: Optimal Window Arrived"
+  description: "Notifies when the optimal energy window starts"
+  trigger:
+    - platform: mqtt
+      topic: "solar/eva/optimal_window"
+  condition: []
+  action:
+    - service: notify.persistent_notification
+      data:
+        title: "EVA: Optimal Window Started"
+        message: "The optimal energy window has arrived. You can now run high-power appliances."
+        notification_id: "eva_window_arrived"
+    - service: mqtt.publish
+      data:
+        topic: "solar/eva/command"
+        payload: "RELEASE_SCHEDULED_DEVICES"
+        qos: "1"
+
+- id: eva_high_phantom_detected
+  alias: "EVA: High Phantom Load Detected"
+  description: "Alerts when multiple phantom loads are consuming power"
+  trigger:
+    - platform: mqtt
+      topic: "solar/eva/map"
+  condition:
+    - condition: template
+      value_template: >
+        {% set phantom_count = 0 %}
+        {% for node_id, node in value_json.nodes.items() %}
+          {% if node.priority == 'PHANTOM' and node.last_power > 5 %}
+            {% set phantom_count = phantom_count + 1 %}
+          {% endif %}
+        {% endfor %}
+        {{ phantom_count > 2 }}
+  action:
+    - service: notify.persistent_notification
+      data:
+        title: "EVA: High Phantom Load Warning"
+        message: "Multiple phantom loads detected consuming power. Consider unplugging standby devices."
+        notification_id: "eva_high_phantom"
+
+- id: eva_device_scheduled
+  alias: "EVA: Device Scheduled"
+  description: "Notifies when a device is scheduled for optimal window"
+  trigger:
+    - platform: mqtt
+      topic: "solar/eva/device/+/schedule"
+  action:
+    - service: notify.persistent_notification
+      data:
+        title: "EVA: Device Scheduled"
+        message: "{{ trigger.topic.split('/')[3] }} scheduled for optimal energy window"
+        notification_id: "eva_device_scheduled"
+
+- id: eva_tier_lockout_warning
+  alias: "EVA: Lockout Tier Warning"
+  description: "Special warning when entering LOCKOUT tier with scheduled devices"
+  trigger:
+    - platform: mqtt
+      topic: "solar/alerts/guard"
+  condition:
+    - condition: template
+      value_template: "{{ 'LOCKOUT' in value_json.message }}"
+  action:
+    - service: notify.persistent_notification
+      data:
+        title: "EVA: LOCKOUT Warning"
+        message: >
+          System entering LOCKOUT. Shiftable devices have been scheduled for optimal windows.
+          Critical loads remain active. Consider reducing consumption.
+        notification_id: "eva_lockout_warning"
+
+- id: eva_recommendations_alert
+  alias: "EVA: Recommendations Available"
+  description: "Notifies when EVA has new recommendations"
+  trigger:
+    - platform: mqtt
+      topic: "solar/eva/map"
+  condition:
+    - condition: template
+      value_template: "{{ value_json.recommendations | length > 0 }}"
+  action:
+    - service: notify.persistent_notification
+      data:
+        title: "EVA: New Recommendations"
+        message: >
+          EVA has {{ value_json.recommendations | length }} recommendations:
+          {% for rec in value_json.recommendations %}
+            - {{ rec.message }}
+          {% endfor %}
+        notification_id: "eva_recommendations"
+
+# =============================================================================
+# SECTION 5: HERMES INTEGRATION AUTOMATIONS
+# =============================================================================
+
+- id: hermes_status_online
+  alias: "Hermes: Status Online"
+  trigger:
+    - platform: mqtt
+      topic: "solar/hermes/status"
+      payload: "ONLINE"
+  action:
+    - service: logbook.log
+      data:
+        name: "Hermes Agent"
+        message: "Hermes AI Agent is online and ready"
+
+- id: hermes_response_received
+  alias: "Hermes: Response Received"
+  trigger:
+    - platform: mqtt
+      topic: "solar/hermes/outbox"
+  action:
+    - service: persistent_notification.create
+      data:
+        title: "Hermes Response"
+        message: "{{ value_json.response }}"
+        notification_id: "hermes_response"

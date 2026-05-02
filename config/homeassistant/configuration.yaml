@@ -1,7 +1,7 @@
 default_config:
 
 # Text to speech
-tts:
+t2:
   - platform: google_translate
 
 automation: !include automations.yaml
@@ -14,12 +14,14 @@ http:
     - 127.0.0.1
     - ::1
 
+# MQTT Configuration - Using !env_var for secrets
 mqtt:
   broker: !env_var MQTT_BROKER
   port: !env_var MQTT_PORT
   username: !env_var MQTT_USER
   password: !env_var MQTT_PASS
 
+# InfluxDB Integration
 influxdb:
   api_version: 2
   ssl: false
@@ -29,3 +31,46 @@ influxdb:
   organization: !env_var INFLUXDB_ORG
   bucket: !env_var INFLUXDB_BUCKET_STATE
 
+# Sensor configuration for EVA
+sensor:
+  - platform: mqtt
+    name: "Battery SOC"
+    state_topic: "solar/battery/soc"
+    unit_of_measurement: "%"
+    value_template: "{{ value | float }}"
+    
+  - platform: mqtt
+    name: "Solar Power"
+    state_topic: "solar/pv/power"
+    unit_of_measurement: "W"
+    value_template: "{{ value | float }}"
+    
+  - platform: mqtt
+    name: "Guard Status"
+    state_topic: "solar/guard/status"
+    
+  - platform: mqtt
+    name: "EVA Energy Map"
+    state_topic: "solar/eva/map"
+    value_template: "{{ value_json.system if value_json else {} }}"
+    
+  - platform: mqtt
+    name: "Optimal Window Start"
+    state_topic: "solar/eva/optimal_window"
+    value_template: "{{ value_json.start_time if value_json else 'N/A' }}"
+
+# Binary sensor for tier alerts
+binary_sensor:
+  - platform: mqtt
+    name: "Guard Lockout Alert"
+    state_topic: "solar/alerts/guard"
+    value_template: "{{ 'LOCKOUT' in value_json.message if value_json else false }}"
+    payload_on: "true"
+    payload_off: "false"
+    
+  - platform: mqtt
+    name: "EVA Phantom Alert"
+    state_topic: "solar/alerts/guard"
+    value_template: "{{ 'Phantom' in value_json.message if value_json else false }}"
+    payload_on: "true"
+    payload_off: "false"

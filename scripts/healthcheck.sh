@@ -1,6 +1,6 @@
 #!/bin/bash
 # /usr/local/bin/healthcheck.sh
-# Docker health check for Solar-Sentinel container
+# Docker health check for Solar-Sentinel-AIO v3 Phase 5
 
 set -e
 
@@ -66,6 +66,14 @@ fi
 if command -v supervisorctl >/dev/null 2>&1; then
     if ! check_supervisor_process energy-guard; then
         echo "Health check failed: Energy Guard process not running"
+        exit 1
+    fi
+fi
+
+# Hermes Agent via supervisorctl (Phase 5)
+if command -v supervisorctl >/dev/null 2>&1; then
+    if ! check_supervisor_process hermes-agent; then
+        echo "Health check failed: Hermes Agent process not running"
         exit 1
     fi
 fi
