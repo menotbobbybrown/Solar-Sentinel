@@ -65,3 +65,15 @@ If Hermes is unresponsive or Ollama fails to load the model:
    `supervisorctl restart hermes-agent`
 
 Note: The model is stored in `/data/ollama/models`, which is a persistent volume and should survive container rebuilds.
+
+## Scenario 6: EVA Registry Corruption
+If the Energy Map shows no devices or the Registry is corrupted:
+1. Check `/data/guard/eva_registry.json`.
+2. Restore from backup or recreate with default appliances.
+3. Restart Energy Guard: `supervisorctl restart energy-guard`
+
+## Scenario 7: InfluxDB EVA Buckets Missing
+If EVA metrics are not appearing in Grafana:
+1. Run `setup.sh` manually to ensure buckets are created:
+   `/usr/local/bin/setup.sh`
+2. Verify buckets: `influx bucket list --token YOUR_TOKEN`

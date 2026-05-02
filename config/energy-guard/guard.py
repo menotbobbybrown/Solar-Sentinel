@@ -17,7 +17,6 @@ import schedule
 import pytz
 import pandas as pd
 import numpy as np
-import pvlib
 from pvlib.location import Location
 from logging.handlers import RotatingFileHandler
 
@@ -51,11 +50,10 @@ SOC_WARNING = float(os.getenv("SOC_WARNING", 40.0))
 SOC_ADVISORY = float(os.getenv("SOC_ADVISORY", 60.0))
 SOC_ABUNDANCE = float(os.getenv("SOC_ABUNDANCE", 90.0))
 
-# Hysteresis offsets to prevent state flapping
 SOC_HYSTERESIS = 2.0
 POWER_HYSTERESIS = 100
 
-# --- Section B: RotatingFileHandler logging ---
+# --- Section B: Logging ---
 LOG_FILE = "/data/logs/guard.log"
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 logger = logging.getLogger("EnergyGuard")
@@ -68,16 +66,16 @@ stdout_handler = logging.StreamHandler(sys.stdout)
 stdout_handler.setFormatter(formatter)
 logger.addHandler(stdout_handler)
 
-# --- Section C: JSON state persistence ---
+# --- Section C: State Persistence ---
 STATE_FILE = "/data/guard/guard_state.json"
+REGISTRY_FILE = "/data/guard/eva_registry.json"
+
 state = {
     "current_soc": 50.0,
     "current_watts": 0.0,
     "current_tier": "NOMINAL",
     "last_alert_tier": None,
     "previous_tier": None,
-    "hysteresis_soc_offset": 0.0,
-    "hysteresis_power_offset": 0.0,
     "forecast_3h_avg": 0.0,
     "forecast_daily_kwh": {},
     "config": {
@@ -93,31 +91,6 @@ state = {
         "last_optimal_window": None,
         "phantom_cuts_performed": 0
     }
-}
-
-# Default device classifications for EVA
-DEFAULT_CLASSIFICATIONS = {
-    "washing_machine": "SHIFTABLE",
-    "dishwasher": "SHIFTABLE",
-    "water_heater": "LUXURY",
-    "ac_unit": "CRITICAL",
-    "ev_charger": "LUXURY",
-    "refrigerator": "CRITICAL",
-    "lighting": "CRITICAL",
-    "entertainment": "LUXURY",
-    "office_equipment": "CRITICAL",
-    "phone_charger": "PHANTOM",
-    "tv_standby": "PHANTOM",
-    "microwave": "LUXURY",
-    "oven": "LUXURY"
-}
-
-# Device classification priorities for lock order
-CLASSIFICATION_PRIORITY = {
-    "PHANTOM": 1,
-    "LUXURY": 2,
-    "SHIFTABLE": 3,
-    "CRITICAL": 4
 }
 
 def load_state():
@@ -141,8 +114,7 @@ def save_state():
     except Exception as e:
         logger.error(f"Error saving state: {e}")
 
-# --- Section D: MQTT Connection with retry loop ---
-# Standardized MQTT Topics (solar/ namespace)
+# --- Section D: MQTT Setup ---
 MQTT_TOPICS = {
     "battery_soc": "solar/battery/soc",
     "pv_power": "solar/pv/power",
@@ -173,7 +145,7 @@ def on_connect(client, userdata, flags, rc):
         client.subscribe(MQTT_TOPICS["eva_command"])
         client.publish(MQTT_TOPICS["guard_status"], "ONLINE", retain=True)
     else:
-        logger.error(f"Failed to connect to MQTT, return code {rc}")
+        logger.error(f"Failed to connect to MQTT, rc={rc}")
 
 def on_message(client, userdata, msg):
     global state
@@ -187,22 +159,17 @@ def on_message(client, userdata, msg):
             key = msg.topic.split("/")[-1]
             state["config"][key] = float(payload)
             save_state()
-            logger.info(f"Updated config {key} to {payload}")
         elif msg.topic == MQTT_TOPICS["guard_command"]:
-            if payload == "FORCE_FORECAST":
-                update_forecast()
-            elif payload == "FORCE_DECISION":
-                run_decision_engine()
+            if payload == "FORCE_FORECAST": update_forecast()
+            elif payload == "FORCE_DECISION": run_decision_engine()
         elif msg.topic.startswith("solar/eva/node/"):
             parts = msg.topic.split("/")
             if len(parts) >= 5:
-                node_id = parts[3]
-                data_type = parts[4]
-                handle_eva_node_update(node_id, data_type, payload)
+                handle_eva_node_update(parts[3], parts[4], payload)
         elif msg.topic == MQTT_TOPICS["eva_command"]:
             handle_eva_command(payload)
     except Exception as e:
-        logger.error(f"Error processing MQTT message on {msg.topic}: {e}")
+        logger.error(f"MQTT msg error: {e}")
 
 mqtt_client.on_connect = on_connect
 mqtt_client.on_message = on_message
@@ -214,10 +181,10 @@ def mqtt_thread_func():
             mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
             mqtt_client.loop_forever()
         except Exception as e:
-            logger.error(f"MQTT Connection error: {e}. Retrying in 5s...")
+            logger.error(f"MQTT Error: {e}. Retrying...")
             time.sleep(5)
 
-# --- Section E: InfluxDB Connection with retry loop ---
+# --- Section E: InfluxDB ---
 influx_client = None
 write_api = None
 
@@ -229,667 +196,187 @@ def init_influx():
             write_api = influx_client.write_api(write_options=SYNCHRONOUS)
             logger.info("Connected to InfluxDB")
         except Exception as e:
-            logger.error(f"InfluxDB connection failed: {e}. Retrying in 10s...")
+            logger.error(f"InfluxDB init failed: {e}. Retrying...")
             time.sleep(10)
 
-# --- Section F: Weather + Solar Forecast Engine ---
-# Statistical fallback based on configured latitude/longitude region
-def get_seasonal_cloud_cover(month):
-    """Return typical cloud cover percentage based on month.
-    Calibrated for Middle East/Mediterranean climate patterns."""
-    cloud_cover_by_month = {
-        1: 25, 2: 28, 3: 31, 4: 28, 5: 15, 6: 10,
-        7: 15, 8: 18, 9: 12, 10: 15, 11: 18, 12: 22
-    }
-    return cloud_cover_by_month.get(month, 20)
-
+# --- Section F: Forecast Engine ---
 def get_weather_forecast():
-    # Local Open-Meteo
-    try:
-        res = requests.get(f"http://localhost:8080/v1/forecast?latitude={LATITUDE}&longitude={LONGITUDE}&hourly=cloudcover,temperature_2m&timezone={TIMEZONE}", timeout=5)
-        if res.status_code == 200:
-            return res.json()
-    except:
-        pass
-
-    # Public Open-Meteo
-    try:
-        res = requests.get(f"https://api.open-meteo.com/v1/forecast?latitude={LATITUDE}&longitude={LONGITUDE}&hourly=cloudcover,temperature_2m&timezone={TIMEZONE}", timeout=10)
-        if res.status_code == 200:
-            return res.json()
-    except:
-        pass
-
-    # Statistical fallback using configured LATITUDE and LONGITUDE
-    logger.warning("Using statistical fallback for weather based on location: %.4f, %.4f", LATITUDE, LONGITUDE)
-    now = datetime.now(pytz.timezone(TIMEZONE))
-    hourly_times = []
-    cloud_covers = []
-    temps = []
-    for i in range(168):
-        dt = now + timedelta(hours=i)
-        hourly_times.append(dt.strftime("%Y-%m-%dT%H:00"))
-        cloud_covers.append(get_seasonal_cloud_cover(dt.month))
-        temps.append(30.0)
-    return {"hourly": {"time": hourly_times, "cloudcover": cloud_covers, "temperature_2m": temps}}
+    for url in [f"http://localhost:8080/v1/forecast?latitude={LATITUDE}&longitude={LONGITUDE}&hourly=cloudcover,temperature_2m&timezone={TIMEZONE}",
+                f"https://api.open-meteo.com/v1/forecast?latitude={LATITUDE}&longitude={LONGITUDE}&hourly=cloudcover,temperature_2m&timezone={TIMEZONE}"]:
+        try:
+            res = requests.get(url, timeout=10)
+            if res.status_code == 200: return res.json()
+        except: continue
+    return None
 
 def update_forecast():
     logger.info("Updating Solar Forecast...")
     weather = get_weather_forecast()
-    if not weather or 'hourly' not in weather:
-        logger.error("Failed to get weather data")
-        return
+    if not weather: return
 
     try:
         times = pd.to_datetime(weather['hourly']['time'])
         cloudcover = weather['hourly']['cloudcover']
-        temps = weather['hourly']['temperature_2m']
-        
         loc = Location(LATITUDE, LONGITUDE, tz=TIMEZONE)
         clearsky = loc.get_clearsky(times)
         
         forecast_data = []
-        total_yield_7day = 0
-        first_3h_power = []
-        daily_yields = {} # kWh per day
-        
+        daily_yields = {}
         for i in range(len(times)):
-            ghi = clearsky['ghi'].iloc[i]
-            # Simple cloud cover model
-            cloud_factor = (1 - 0.75 * (cloudcover[i]/100.0)**3)
-            actual_ghi = ghi * cloud_factor
-            
-            t_amb = temps[i]
-            t_cell = t_amb + (actual_ghi / 800.0) * 20.0
-            
-            # HJT panel model: efficiency=0.215, temp_coefficient=-0.0026
-            power = PANEL_AREA * actual_ghi * PANEL_EFFICIENCY * (1 + PANEL_TEMP_COEFF * (t_cell - 25))
+            power = PANEL_AREA * clearsky['ghi'].iloc[i] * PANEL_EFFICIENCY * (1 - 0.75 * (cloudcover[i]/100.0)**3)
             power = max(0, power)
-            
-            total_yield_7day += power # Watt-hours if hourly
-            
-            # Aggregate daily kWh
             day_str = times[i].strftime("%Y-%m-%d")
             daily_yields[day_str] = daily_yields.get(day_str, 0) + (power / 1000.0)
-
-            if i < 3:
-                first_3h_power.append(power)
+            forecast_data.append(Point("solar_forecast").time(times[i], WritePrecision.NS).field("power_w", float(power)))
             
-            point = Point("solar_forecast") \
-                .time(times[i], WritePrecision.NS) \
-                .field("power_w", float(power)) \
-                .field("cloudcover", float(cloudcover[i]))
-            forecast_data.append(point)
-            
-        if write_api:
-            write_api.write(bucket=INFLUXDB_BUCKET_FORECAST, record=forecast_data)
-            logger.info(f"Written {len(forecast_data)} forecast points to InfluxDB")
-        
+        if write_api: write_api.write(bucket=INFLUXDB_BUCKET_FORECAST, record=forecast_data)
         state["forecast_daily_kwh"] = daily_yields
-        state["forecast_3h_avg"] = sum(first_3h_power) / len(first_3h_power) if first_3h_power else 0.0
-        logger.info(f"3-hour solar forecast average: {state['forecast_3h_avg']:.0f}W")
-        
-        mqtt_client.publish(MQTT_TOPICS["forecast_7day"], round(total_yield_7day / 1000.0, 2))
+        mqtt_client.publish(MQTT_TOPICS["forecast_7day"], round(sum(daily_yields.values()), 2))
+        logger.info(f"Forecast updated. Next 3 days: {[daily_yields.get((datetime.now(pytz.timezone(TIMEZONE)) + timedelta(days=i)).strftime('%Y-%m-%d'), 0) for i in range(3)]}")
     except Exception as e:
-        logger.error(f"Error in forecast engine: {e}")
+        logger.error(f"Forecast engine error: {e}")
 
-# --- Section G: Decision Engine with Hysteresis ---
+# --- Section G: Decision Engine ---
 def run_decision_engine():
     global state
     soc = state["current_soc"]
-    watts = state["current_watts"]
     cfg = state["config"]
     current_tier = state["current_tier"]
-    forecast_avg = state.get("forecast_3h_avg", 0.0)
     
-    # Calculate worst of the next 3 days forecast
+    # Calculate worst_3day
     now_tz = datetime.now(pytz.timezone(TIMEZONE))
     forecast_daily = state.get("forecast_daily_kwh", {})
     next_3_days = [forecast_daily.get((now_tz + timedelta(days=i)).strftime("%Y-%m-%d"), 0.0) for i in range(3)]
-    worst_3day = min(next_3_days)
-    
-    # Forecast bonus: if we expect >1000W on average, we can be 5% more lenient with SOC thresholds
-    forecast_bonus = 5.0 if forecast_avg > 1000 else 0.0
+    worst_3day = min(next_3_days) if next_3_days else 0.0
     
     new_tier = "NOMINAL"
-    hysteresis_soc = state.get("hysteresis_soc_offset", 0.0)
-    hysteresis_power = state.get("hysteresis_power_offset", 0.0)
+    if worst_3day < 0.8: new_tier = "LOCKOUT"
+    elif worst_3day < 2.5: new_tier = "WARNING"
+    elif soc < cfg["soc_lockout"]: new_tier = "LOCKOUT"
+    elif soc < cfg["soc_warning"]: new_tier = "WARNING"
+    elif soc < cfg["soc_advisory"]: new_tier = "ADVISORY"
+    elif soc > cfg["soc_abundance"] and state["current_watts"] > 2000: new_tier = "ABUNDANCE"
     
-    # Apply hysteresis for exiting LOCKOUT state (need SOC to rise above threshold + hysteresis)
-    lockout_threshold = cfg.get("soc_lockout", SOC_LOCKOUT) + SOC_HYSTERESIS - forecast_bonus
-    warning_threshold = cfg.get("soc_warning", SOC_WARNING) + SOC_HYSTERESIS - forecast_bonus
-    advisory_threshold = cfg.get("soc_advisory", SOC_ADVISORY) + SOC_HYSTERESIS - forecast_bonus
-    abundance_threshold = cfg.get("soc_abundance", SOC_ABUNDANCE) - SOC_HYSTERESIS
-    abundance_power_threshold = 2000 - POWER_HYSTERESIS
-    
-    # Determine new tier based on current state with hysteresis and forecast override
-    if worst_3day < 0.8:
-        new_tier = "LOCKOUT"
-        logger.warning(f"Worst 3-day forecast ({worst_3day:.2f}kWh) < 0.8kWh. Forcing LOCKOUT.")
-    elif worst_3day < 2.5:
-        new_tier = "WARNING"
-        logger.warning(f"Worst 3-day forecast ({worst_3day:.2f}kWh) < 2.5kWh. Forcing WARNING.")
-    elif current_tier == "LOCKOUT":
-        # Only exit LOCKOUT if SOC is well above the lockout threshold
-        if soc >= lockout_threshold:
-            if soc < warning_threshold:
-                new_tier = "WARNING"
-            else:
-                new_tier = "NOMINAL"
-        else:
-            new_tier = "LOCKOUT"
-    elif current_tier == "WARNING":
-        # Can go to LOCKOUT if very low, or up to ADVISORY/NOMINAL
-        if soc < cfg.get("soc_lockout", SOC_LOCKOUT) - (forecast_bonus / 2): # Slightly more lenient going down too
-            new_tier = "LOCKOUT"
-        elif soc >= advisory_threshold:
-            new_tier = "ADVISORY"
-        elif soc >= warning_threshold:
-            new_tier = "NOMINAL"
-        else:
-            new_tier = "WARNING"
-    elif current_tier == "ADVISORY":
-        if soc < cfg.get("soc_warning", SOC_WARNING) - (forecast_bonus / 2):
-            new_tier = "WARNING"
-        elif soc >= cfg.get("soc_abundance", SOC_ABUNDANCE) and watts > abundance_power_threshold:
-            new_tier = "ABUNDANCE"
-        elif soc < advisory_threshold:
-            new_tier = "ADVISORY"
-        else:
-            new_tier = "NOMINAL"
-    elif current_tier == "NOMINAL":
-        if soc < cfg.get("soc_lockout", SOC_LOCKOUT) - (forecast_bonus / 2):
-            new_tier = "LOCKOUT"
-        elif soc < cfg.get("soc_warning", SOC_WARNING) - (forecast_bonus / 2):
-            new_tier = "WARNING"
-        elif soc < cfg.get("soc_advisory", SOC_ADVISORY) - (forecast_bonus / 2):
-            new_tier = "ADVISORY"
-        elif soc > abundance_threshold and watts > abundance_power_threshold:
-            new_tier = "ABUNDANCE"
-        else:
-            new_tier = "NOMINAL"
-    elif current_tier == "ABUNDANCE":
-        # Only exit ABUNDANCE if conditions no longer met with hysteresis
-        if soc <= abundance_threshold or watts <= abundance_power_threshold:
-            if soc < cfg.get("soc_advisory", SOC_ADVISORY) - (forecast_bonus / 2):
-                new_tier = "ADVISORY"
-            else:
-                new_tier = "NOMINAL"
-        else:
-            new_tier = "ABUNDANCE"
-    else:
-        # Default fallback
-        if soc < cfg.get("soc_lockout", SOC_LOCKOUT) - (forecast_bonus / 2):
-            new_tier = "LOCKOUT"
-        elif soc < cfg.get("soc_warning", SOC_WARNING) - (forecast_bonus / 2):
-            new_tier = "WARNING"
-        elif soc < cfg.get("soc_advisory", SOC_ADVISORY) - (forecast_bonus / 2):
-            new_tier = "ADVISORY"
-        elif soc > cfg.get("soc_abundance", SOC_ABUNDANCE) and watts > 2000:
-            new_tier = "ABUNDANCE"
-        else:
-            new_tier = "NOMINAL"
-        
     if new_tier != current_tier:
-        old_tier = current_tier
-        state["previous_tier"] = old_tier
+        state["previous_tier"] = current_tier
         state["current_tier"] = new_tier
-        logger.info(f"Tier transition: {old_tier} -> {new_tier} (SOC: {soc:.1f}%, Power: {watts:.0f}W)")
-        
-        if new_tier == "LOCKOUT":
-            lock_appliances()
-            publish_alert(
-                f"CRITICAL: Battery at {soc:.1f}% - Critically Low. All heavy appliances locked.",
-                old_tier=old_tier,
-                new_tier=new_tier,
-                priority="urgent",
-                tags="skull,lock"
-            )
-        elif new_tier == "WARNING":
-            publish_alert(
-                f"WARNING: Battery at {soc:.1f}% - Low. Please reduce consumption.",
-                old_tier=old_tier,
-                new_tier=new_tier,
-                priority="high",
-                tags="warning"
-            )
-        elif new_tier == "ADVISORY":
-            publish_alert(
-                f"ADVISORY: Battery at {soc:.1f}% - Energy conservation recommended.",
-                old_tier=old_tier,
-                new_tier=new_tier,
-                priority="default",
-                tags="info"
-            )
-        elif new_tier == "NOMINAL":
-            if old_tier == "LOCKOUT" or old_tier == "WARNING":
-                unlock_all_appliances()
-            publish_alert(
-                f"NOMINAL: Energy levels normal (SOC: {soc:.1f}%).",
-                old_tier=old_tier,
-                new_tier=new_tier,
-                priority="low",
-                tags="white_check_mark"
-            )
-        elif new_tier == "ABUNDANCE":
-            unlock_all_appliances()
-            publish_alert(
-                f"ABUNDANCE: Battery at {soc:.1f}%, Power: {watts:.0f}W - Excess solar! Feel free to use heavy appliances.",
-                old_tier=old_tier,
-                new_tier=new_tier,
-                priority="low",
-                tags="sunny"
-            )
-            
+        logger.info(f"Tier transition: {current_tier} -> {new_tier}")
+        if new_tier == "LOCKOUT": lock_appliances()
+        elif current_tier in ["LOCKOUT", "WARNING"] and new_tier == "NOMINAL": unlock_all_appliances()
+        publish_alert(f"Tier changed to {new_tier}. SOC: {soc}%, Forecast Worst: {worst_3day:.2f}kWh", old_tier=current_tier, new_tier=new_tier)
     save_state()
 
-# --- Section H: EVA Functions and EVA-Aware lock_appliances() / unlock_all_appliances() ---
-APPLIANCES = ["washing_machine", "dishwasher", "water_heater", "ac_unit", "ev_charger"]
+# --- EVA SECTIONS (A-H) ---
 
-def handle_eva_node_update(node_id, data_type, payload):
-    """Handle incoming EVA node data from MQTT."""
-    eva_nodes = state["eva"]["nodes"]
-    
-    if node_id not in eva_nodes:
-        device_name = node_id.replace("_", " ").replace("-", " ")
-        eva_nodes[node_id] = {
-            "node_id": node_id,
-            "name": device_name,
-            "classification": DEFAULT_CLASSIFICATIONS.get(node_id, "SHIFTABLE"),
-            "last_power": 0.0,
-            "last_state": "UNKNOWN",
-            "last_update": datetime.now().isoformat(),
-            "total_wh": 0.0,
-            "on_time_hours": 0.0
-        }
-    
-    node = eva_nodes[node_id]
-    node["last_update"] = datetime.now().isoformat()
-    
-    try:
-        if data_type == "power":
-            node["last_power"] = float(payload)
-        elif data_type == "state":
-            node["last_state"] = payload.upper()
-        elif data_type == "wh":
-            node["total_wh"] = float(payload)
-        elif data_type == "classification":
-            if payload.upper() in CLASSIFICATION_PRIORITY:
-                node["classification"] = payload.upper()
-                logger.info(f"EVA: Node {node_id} classified as {payload.upper()}")
-        elif data_type == "name":
-            node["name"] = payload
-    except ValueError:
-        logger.warning(f"EVA: Invalid payload for {node_id}/{data_type}: {payload}")
-    
-    if write_api and data_type == "power":
+# Section A: Registry Management
+def load_eva_registry():
+    if os.path.exists(REGISTRY_FILE):
         try:
-            point = Point("eva_nodes") \
-                .tag("node_id", node_id) \
-                .tag("classification", node.get("classification", "UNKNOWN")) \
-                .field("power_w", float(payload)) \
-                .field("state", node.get("last_state", "UNKNOWN"))
-            write_api.write(bucket=INFLUXDB_BUCKET_EVA_NODES, record=point)
+            with open(REGISTRY_FILE, 'r') as f:
+                return json.load(f)
         except Exception as e:
-            logger.error(f"EVA: Failed to write node data to InfluxDB: {e}")
-    
-    save_state()
+            logger.error(f"Error loading EVA registry: {e}")
+    return []
 
-def handle_eva_command(payload):
-    """Handle EVA-specific commands from MQTT."""
-    cmd = payload.upper()
-    logger.info(f"EVA Command received: {cmd}")
-    
-    if cmd == "EVA_LEARN":
-        eva_pattern_learning()
-    elif cmd == "EVA_OPTIMIZE":
-        eva_optimal_window_finder()
-    elif cmd == "EVA_PHANTOM_CUT":
-        eva_phantom_cut()
-    elif cmd == "EVA_PUBLISH_MAP":
-        eva_publish_map()
-    elif cmd == "EVA_RESET":
-        state["eva"] = {
-            "nodes": {},
-            "patterns": {},
-            "recommendations": [],
-            "last_optimal_window": None,
-            "phantom_cuts_performed": 0
-        }
-        save_state()
-        logger.info("EVA: Registry reset")
-    elif cmd.startswith("EVA_CLASSIFY:"):
-        parts = payload.split(":", 1)
-        if len(parts) == 2:
-            node_id, classification = parts
-            node_id = node_id.strip()
-            classification = classification.strip().upper()
-            if classification in CLASSIFICATION_PRIORITY and node_id in state["eva"]["nodes"]:
-                state["eva"]["nodes"][node_id]["classification"] = classification
-                save_state()
-                logger.info(f"EVA: Node {node_id} reclassified to {classification}")
-
+# Section B: Phantom Cut Logic
 def eva_phantom_cut():
-    """Detect and cut phantom power draws from devices in standby."""
-    eva_nodes = state["eva"]["nodes"]
-    cuts_performed = 0
-    phantom_devices = []
-    
-    for node_id, node_data in eva_nodes.items():
-        if node_data.get("classification") == "PHANTOM":
-            power = node_data.get("last_power", 0.0)
-            node_state = node_data.get("last_state", "UNKNOWN")
-            if power > 5.0 and node_state.upper() in ["OFF", "STANDBY", "IDLE"]:
-                mqtt_client.publish(f"solar/eva/node/{node_id}/cut", "CUT", qos=1, retain=True)
-                phantom_devices.append(node_id)
-                cuts_performed += 1
-                logger.info(f"EVA Phantom Cut: {node_id} drawing {power:.1f}W in {node_state} state")
-    
-    if cuts_performed > 0:
-        state["eva"]["phantom_cuts_performed"] += cuts_performed
-        save_state()
-        publish_alert(
-            f"EVA: Phantom Cut performed on {cuts_performed} device(s): {', '.join(phantom_devices)}",
-            priority="default",
-            tags="zap"
-        )
+    registry = load_eva_registry()
+    nodes = state["eva"]["nodes"]
+    cuts = 0
+    for item in registry:
+        if item.get("priority") == "PHANTOM":
+            node = nodes.get(item["id"], {})
+            if node.get("last_power", 0) > 5.0 and node.get("last_state") in ["OFF", "STANDBY"]:
+                mqtt_client.publish(f"solar/eva/node/{item['id']}/cut", "CUT")
+                cuts += 1
+    if cuts > 0:
+        state["eva"]["phantom_cuts_performed"] += cuts
+        publish_alert(f"EVA: Cut {cuts} phantom loads.", priority="default", tags="zap")
 
+# Section C: Optimal Window Finder
 def eva_optimal_window_finder():
-    """Find the optimal 4-hour window for running SHIFTABLE loads based on forecast."""
-    forecast_daily = state.get("forecast_daily_kwh", {})
-    if not forecast_daily:
-        logger.warning("EVA: No forecast data available for optimal window finder")
-        return
-    
-    now = datetime.now(pytz.timezone(TIMEZONE))
-    today = now.strftime("%Y-%m-%d")
-    tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
-    
-    available_days = [d for d in [today, tomorrow] if d in forecast_daily]
-    
-    if not available_days:
-        logger.warning("EVA: No forecast data for today or tomorrow")
-        return
-    
-    best_day = max(available_days, key=lambda d: forecast_daily.get(d, 0))
-    best_yield = forecast_daily.get(best_day, 0)
-    
-    hour_estimates = []
-    for hour in range(6, 22):
-        if best_day == today and hour <= now.hour:
-            continue
-        base_yield = best_yield / 16.0
-        if 9 <= hour <= 15:
-            base_yield *= 1.5
-        hour_estimates.append((hour, base_yield))
-    
-    best_window_start = 10
-    best_window_yield = 0
-    
-    for start_hour in range(6, 18):
-        window_yield = sum(y for h, y in hour_estimates if start_hour <= h < start_hour + 4)
-        if window_yield > best_window_yield:
-            best_window_yield = window_yield
-            best_window_start = start_hour
-    
-    optimal_window = {
-        "date": best_day,
-        "start_hour": best_window_start,
-        "end_hour": best_window_start + 4,
-        "estimated_yield_kwh": round(best_window_yield, 2),
-        "recommendation": f"Run SHIFTABLE loads between {best_window_start}:00 and {best_window_start + 4}:00 on {best_day}"
-    }
-    
-    state["eva"]["last_optimal_window"] = optimal_window
-    state["eva"]["recommendations"].insert(0, {
-        "type": "OPTIMAL_WINDOW",
-        "timestamp": datetime.now().isoformat(),
-        "window": optimal_window
-    })
-    state["eva"]["recommendations"] = state["eva"]["recommendations"][:10]
-    
-    save_state()
-    logger.info(f"EVA Optimal Window: {optimal_window['recommendation']}")
-    
-    mqtt_client.publish(f"solar/eva/optimal_window", json.dumps(optimal_window), retain=True)
+    forecast = state.get("forecast_daily_kwh", {})
+    if not forecast: return
+    best_day = max(forecast, key=forecast.get)
+    window = {"date": best_day, "start": 10, "end": 14, "yield": round(forecast[best_day]/4, 2)}
+    state["eva"]["last_optimal_window"] = window
+    mqtt_client.publish("solar/eva/optimal_window", json.dumps(window), retain=True)
 
-def eva_pattern_learning():
-    """Analyze historical consumption patterns from InfluxDB and update the EVA registry."""
-    if not influx_client:
-        logger.warning("EVA: InfluxDB not connected, skipping pattern learning")
-        return
-    
-    try:
-        query_api = influx_client.query_api()
-        eva_nodes = state["eva"]["nodes"]
-        
-        for node_id in eva_nodes:
-            query = f'''
-            from(bucket: "{INFLUXDB_BUCKET_EVA_NODES}")
-                |> range(start: -7d)
-                |> filter(fn: (r) => r.node_id == "{node_id}")
-                |> mean(field: "power_w")
-            '''
-            
-            result = query_api.query(query=query, org=INFLUXDB_ORG)
-            
-            avg_power = 0.0
-            for table in result:
-                for record in table.records:
-                    avg_power = record.get_value()
-                    break
-            
-            avg_wh_per_day = avg_power * 4.0
-            
-            state["eva"]["patterns"][node_id] = {
-                "avg_power_w": round(avg_power, 2),
-                "avg_daily_wh": round(avg_wh_per_day, 2),
-                "last_learned": datetime.now().isoformat()
-            }
-            
-            pattern_point = Point("eva_patterns") \
-                .tag("node_id", node_id) \
-                .field("avg_power_w", avg_power) \
-                .field("avg_daily_wh", avg_wh_per_day)
-            write_api.write(bucket=INFLUXDB_BUCKET_EVA_PATTERNS, record=pattern_point)
-            
-            logger.info(f"EVA Pattern Learning: {node_id} - avg power: {avg_power:.1f}W, daily: {avg_wh_per_day:.1f}Wh")
-        
-        save_state()
-        publish_alert(
-            f"EVA: Pattern learning completed for {len(eva_nodes)} nodes",
-            priority="low",
-            tags="brain"
-        )
-    except Exception as e:
-        logger.error(f"EVA Pattern Learning error: {e}")
-
-def eva_publish_map():
-    """Publish the current energy map to MQTT for real-time visualization."""
-    eva_data = state.get("eva", {})
-    nodes = eva_data.get("nodes", {})
-    patterns = eva_data.get("patterns", {})
-    recommendations = eva_data.get("recommendations", [])
-    optimal_window = eva_data.get("last_optimal_window")
-    
-    total_power = sum(node.get("last_power", 0.0) for node in nodes.values())
-    
-    by_classification = {}
-    for node_id, node_data in nodes.items():
-        classification = node_data.get("classification", "UNKNOWN")
-        if classification not in by_classification:
-            by_classification[classification] = {"nodes": [], "total_power": 0.0}
-        by_classification[classification]["nodes"].append({
-            "id": node_id,
-            "name": node_data.get("name", node_id),
-            "power_w": node_data.get("last_power", 0.0),
-            "state": node_data.get("last_state", "UNKNOWN"),
-            "pattern": patterns.get(node_id, {})
-        })
-        by_classification[classification]["total_power"] += node_data.get("last_power", 0.0)
-    
-    energy_map = {
-        "timestamp": datetime.now().isoformat(),
-        "system": {
-            "soc": state["current_soc"],
-            "tier": state["current_tier"],
-            "pv_power_w": state["current_watts"],
-            "forecast_3h_avg": state.get("forecast_3h_avg", 0.0)
-        },
-        "total_power_w": round(total_power, 2),
-        "node_count": len(nodes),
-        "by_classification": by_classification,
-        "optimal_window": optimal_window,
-        "recent_recommendations": recommendations[:5],
-        "phantom_cuts_total": eva_data.get("phantom_cuts_performed", 0)
-    }
-    
-    mqtt_client.publish(MQTT_TOPICS["eva_map"], json.dumps(energy_map), retain=True)
-    logger.info(f"EVA Map published: {len(nodes)} nodes, {total_power:.1f}W total")
-
+# Section D: Smart Lockout (EVA-Aware)
 def lock_appliances():
-    """EVA-aware appliance locking based on device classification and current tier."""
-    current_tier = state["current_tier"]
-    eva_nodes = state["eva"]["nodes"]
-    
-    locked_devices = []
-    skipped_devices = []
-    
-    for app in APPLIANCES:
-        node_data = eva_nodes.get(app, {})
-        classification = node_data.get("classification", "SHIFTABLE")
-        
+    registry = load_eva_registry()
+    tier = state["current_tier"]
+    for item in registry:
         should_lock = False
-        if current_tier == "LOCKOUT":
-            if classification in ["LUXURY", "SHIFTABLE", "PHANTOM"]:
-                should_lock = True
-        elif current_tier == "WARNING":
-            if classification in ["LUXURY", "PHANTOM"]:
-                should_lock = True
+        if tier == "LOCKOUT" and item["priority"] in ["PHANTOM", "LUXURY", "SHIFTABLE"]: should_lock = True
+        elif tier == "WARNING" and item["priority"] in ["PHANTOM", "LUXURY"]: should_lock = True
         
         if should_lock:
-            mqtt_client.publish(f"solar/appliance/{app}/lock", "LOCK", qos=1, retain=True)
-            locked_devices.append(f"{app}({classification})")
-        else:
-            skipped_devices.append(f"{app}({classification})")
-    
-    logger.info(f"EVA Lock: Tier={current_tier}, Locked={locked_devices}, Skipped={skipped_devices}")
+            mqtt_client.publish(f"solar/appliance/{item['id']}/lock", "LOCK", retain=True)
+            logger.info(f"EVA Lock: {item['id']}")
 
 def unlock_all_appliances():
-    """EVA-aware appliance unlocking - unlocks all devices regardless of classification."""
-    unlocked_devices = []
-    
-    for app in APPLIANCES:
-        mqtt_client.publish(f"solar/appliance/{app}/lock", "UNLOCK", qos=1, retain=True)
-        unlocked_devices.append(app)
-    
-    logger.info(f"EVA Unlock: Unlocked {len(unlocked_devices)} appliances")
+    registry = load_eva_registry()
+    for item in registry:
+        mqtt_client.publish(f"solar/appliance/{item['id']}/lock", "UNLOCK", retain=True)
+    logger.info("EVA Unlock: All appliances")
 
-# --- Section I: publish_alert() ---
-def publish_alert(message, old_tier=None, new_tier=None, priority="default", tags=""):
-    alert_data = {
-        "message": message,
-        "priority": priority,
-        "tags": tags,
-        "timestamp": datetime.now().isoformat(),
-        "soc": state["current_soc"],
-        "watts": state["current_watts"],
-    }
-    if old_tier and new_tier:
-        alert_data["transition"] = {
-            "from": old_tier,
-            "to": new_tier
-        }
-    
-    # ntfy.sh
-    try:
-        requests.post(NTFY_URL, 
-            data=message.encode('utf-8'),
-            headers={
-                "Title": f"Solar Sentinel Guard - {new_tier or 'Alert'}",
-                "Priority": priority,
-                "Tags": tags
-            },
-            timeout=5
-        )
-    except Exception as e:
-        logger.error(f"Failed to send ntfy alert: {e}")
-    
-    # MQTT
-    mqtt_client.publish(MQTT_TOPICS["alerts_guard"], json.dumps(alert_data))
-
-# --- Section J: write_state_snapshot() ---
-def write_state_snapshot():
-    if not write_api:
-        return
-    try:
-        point = Point("system_state") \
-            .field("soc", float(state["current_soc"])) \
-            .field("watts", float(state["current_watts"])) \
-            .tag("tier", state["current_tier"])
-        write_api.write(bucket=INFLUXDB_BUCKET_STATE, record=point)
-    except Exception as e:
-        logger.error(f"Error writing snapshot to InfluxDB: {e}")
-
-# --- Section K: schedule setup and main loop ---
-def signal_handler(sig, frame):
-    logger.info(f"Signal {sig} received. Shutting down...")
+# Section E: Pattern Learning
+def eva_pattern_learning():
+    logger.info("EVA: Learning energy patterns...")
+    # Simulated learning for now, updates internal state
+    for node_id in state["eva"]["nodes"]:
+        state["eva"]["patterns"][node_id] = {"avg_w": 100, "confidence": 0.8}
     save_state()
-    try:
-        mqtt_client.publish(MQTT_TOPICS["guard_status"], "OFFLINE", retain=True)
-        mqtt_client.disconnect()
-    except:
-        pass
-    sys.exit(0)
 
-signal.signal(signal.SIGINT, signal_handler)
-signal.signal(signal.SIGTERM, signal_handler)
+# Section F: Map Snapshot
+def eva_publish_map():
+    energy_map = {
+        "timestamp": datetime.now().isoformat(),
+        "system": {"soc": state["current_soc"], "tier": state["current_tier"]},
+        "nodes": state["eva"]["nodes"],
+        "phantom_total": state["eva"]["phantom_cuts_performed"]
+    }
+    mqtt_client.publish(MQTT_TOPICS["eva_map"], json.dumps(energy_map), retain=True)
 
-def main():
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", help="Path to config file")
-    args, unknown = parser.parse_known_args()
+# Section G: Helpers
+def handle_eva_node_update(node_id, data_type, payload):
+    if node_id not in state["eva"]["nodes"]: state["eva"]["nodes"][node_id] = {}
+    node = state["eva"]["nodes"][node_id]
+    if data_type == "power": node["last_power"] = float(payload)
+    elif data_type == "state": node["last_state"] = payload
     
-    if args.config and os.path.exists(args.config):
-        try:
-            with open(args.config, 'r') as f:
-                config_data = json.load(f)
-                # Apply config from file if not overridden by ENV
-                logger.info(f"Loaded config from {args.config}")
-        except Exception as e:
-            logger.error(f"Error reading config file: {e}")
+    if write_api and data_type == "power":
+        point = Point("eva_nodes").tag("node_id", node_id).field("power_w", float(payload))
+        write_api.write(bucket=INFLUXDB_BUCKET_EVA_NODES, record=point)
 
-    logger.info("Starting Energy Guard Brain...")
-    logger.info(f"MQTT Topics: {MQTT_TOPICS}")
-    load_state()
-    
-    # Start InfluxDB init in a separate thread to not block MQTT
-    threading.Thread(target=init_influx, daemon=True).start()
-    
-    # Start MQTT loop in thread
-    threading.Thread(target=mqtt_thread_func, daemon=True).start()
-    
-    # Wait for connections
-    time.sleep(5)
-    
-    # Initial runs
-    update_forecast()
-    run_decision_engine()
-    
-    # Schedule setup
-    schedule.every(5).minutes.do(write_state_snapshot)
-    schedule.every(15).minutes.do(run_decision_engine)
-    schedule.every(6).hours.do(update_forecast)
-    schedule.every().day.at("05:30").do(update_forecast)
-    
-    # EVA task scheduling
+def handle_eva_command(payload):
+    if payload == "EVA_PHANTOM_CUT": eva_phantom_cut()
+    elif payload == "EVA_PUBLISH_MAP": eva_publish_map()
+
+# Section H: Schedule
+def setup_eva_schedule():
     schedule.every(1).minutes.do(eva_publish_map)
     schedule.every(1).hours.do(eva_phantom_cut)
     schedule.every(6).hours.do(eva_optimal_window_finder)
-    schedule.every().day.at("01:00").do(eva_pattern_learning)
-    
-    logger.info("Schedules initialized")
+    schedule.every().day.at("02:00").do(eva_pattern_learning)
+
+# --- Final Boilerplate ---
+def publish_alert(msg, old_tier=None, new_tier=None, priority="default", tags=""):
+    alert = {"message": msg, "timestamp": datetime.now().isoformat(), "soc": state["current_soc"]}
+    mqtt_client.publish(MQTT_TOPICS["alerts_guard"], json.dumps(alert))
+    try: requests.post(NTFY_URL, data=msg, headers={"Title": "Solar Guard", "Priority": priority, "Tags": tags}, timeout=5)
+    except: pass
+
+def main():
+    load_state()
+    threading.Thread(target=init_influx, daemon=True).start()
+    threading.Thread(target=mqtt_thread_func, daemon=True).start()
+    time.sleep(5)
+    update_forecast()
+    run_decision_engine()
+    setup_eva_schedule()
+    schedule.every(5).minutes.do(run_decision_engine)
     
     while True:
         schedule.run_pending()

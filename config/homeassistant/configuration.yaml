@@ -20,9 +20,9 @@ mqtt:
 influxdb:
   api_version: 2
   ssl: false
-  host: localhost
-  port: 8086
+  host: !env_var INFLUXDB_HOST
+  port: !env_var INFLUXDB_PORT
   token: !env_var INFLUXDB_TOKEN
   organization: !env_var INFLUXDB_ORG
-  bucket: system_state
+  bucket: !env_var INFLUXDB_BUCKET_STATE
 

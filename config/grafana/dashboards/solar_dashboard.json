@@ -844,6 +844,124 @@
       ],
       "title": "SOC Trend (7 days)",
       "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 27
+      },
+      "id": 13,
+      "panels": [],
+      "title": "EVA Energy Map",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "InfluxDB_Solar"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 28
+      },
+      "id": 14,
+      "title": "EVA: Node Power Distribution",
+      "type": "piechart",
+      "targets": [
+        {
+          "query": "from(bucket: \"eva_nodes\") |> range(start: -1h) |> filter(fn: (r) => r._field == \"power_w\") |> last()",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "InfluxDB_Solar"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 16,
+        "x": 8,
+        "y": 28
+      },
+      "id": 15,
+      "title": "EVA: Node Power History",
+      "type": "timeseries",
+      "targets": [
+        {
+          "query": "from(bucket: \"eva_nodes\") |> range(start: -6h) |> filter(fn: (r) => r._field == \"power_w\")",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "InfluxDB_Solar"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 36
+      },
+      "id": 16,
+      "title": "Phantom Load Estimate",
+      "type": "stat",
+      "targets": [
+        {
+          "query": "from(bucket: \"eva_patterns\") |> range(start: -24h) |> filter(fn: (r) => r._field == \"avg_daily_wh\") |> mean()",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "InfluxDB_Solar"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 36
+      },
+      "id": 17,
+      "title": "EVA: Pattern Match",
+      "type": "table",
+      "targets": [
+        {
+          "query": "from(bucket: \"eva_patterns\") |> range(start: -24h) |> last()",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "InfluxDB_Solar"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 36
+      },
+      "id": 18,
+      "title": "Efficiency Score",
+      "type": "gauge",
+      "targets": [
+        {
+          "query": "from(bucket: \"system_state\") |> range(start: -1h) |> filter(fn: (r) => r._field == \"soc\") |> mean()",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",
