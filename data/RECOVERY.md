@@ -54,17 +54,13 @@ This guide covers scenarios for restoring the Solar-Sentinel-AIO system in case 
 ## First-Boot Checklist
 - Verify USB drive is mounted and detected by running `/data/scripts/usb_backup.sh`.
 
-## Scenario 5: Ollama/Hermes recovery
-If Hermes is unresponsive or Ollama fails to load the model:
-1. Check Ollama status: `supervisorctl status ollama`
+## Scenario 5: Gemini/Hermes recovery
+If Hermes is unresponsive or fails to connect to the Gemini API:
+1. Check Google API Key: Ensure `GOOGLE_API_KEY` is correctly set in your environment or `docker-compose.yml`.
 2. Check Hermes logs: `tail -f /data/logs/hermes.log`
-3. Manually re-pull the model if needed:
-   `OLLAMA_MODELS=/data/ollama/models ollama pull hermes-3-llama3.1:8b-q4_K_M`
-4. Restart services:
-   `supervisorctl restart ollama`
+3. Verify internet connectivity: Gemini requires a connection to Google's API endpoints.
+4. Restart Hermes:
    `supervisorctl restart hermes-agent`
-
-Note: The model is stored in `/data/ollama/models`, which is a persistent volume and should survive container rebuilds.
 
 ## Scenario 6: EVA Registry Corruption
 If the Energy Map shows no devices or the Registry is corrupted:

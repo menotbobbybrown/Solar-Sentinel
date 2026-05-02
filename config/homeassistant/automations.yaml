@@ -154,7 +154,7 @@
     - service: notify.persistent_notification
       data:
         title: "Energy Map Updated"
-        message: "Total Power: {{ value_json.total_power_w }}W, SOC: {{ value_json.system.soc }}%"
+        message: "PV Watts: {{ value_json.system.pv_watts }}W, SOC: {{ value_json.system.soc }}%"
         notification_id: "eva_map_status"
 
 - id: eva_phantom_alert
@@ -181,7 +181,7 @@
     - service: notify.persistent_notification
       data:
         title: "Optimal Energy Window"
-        message: "Best time to use power: {{ value_json.start }}:00 - {{ value_json.end }}:00 on {{ value_json.date }}"
+        message: "Best time to use power: {{ value_json.start_time }} to {{ value_json.end_time }}"
         notification_id: "eva_optimal_window"
 
 - id: eva_pattern_match
