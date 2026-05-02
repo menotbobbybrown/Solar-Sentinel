@@ -295,12 +295,49 @@ def eva_phantom_cut():
 
 # Section C: Optimal Window Finder
 def eva_optimal_window_finder():
-    forecast = state.get("forecast_daily_kwh", {})
-    if not forecast: return
-    best_day = max(forecast, key=forecast.get)
-    window = {"date": best_day, "start": 10, "end": 14, "yield": round(forecast[best_day]/4, 2)}
-    state["eva"]["last_optimal_window"] = window
-    mqtt_client.publish("solar/eva/optimal_window", json.dumps(window), retain=True)
+    logger.info("EVA: Finding optimal 4-hour window...")
+    if not influx_client: return
+    
+    query_api = influx_client.query_api()
+    query = f'''
+    from(bucket: "{INFLUXDB_BUCKET_FORECAST}")
+      |> range(start: now(), stop: 48h)
+      |> filter(fn: (r) => r["_measurement"] == "solar_forecast")
+      |> filter(fn: (r) => r["_field"] == "power_w")
+      |> aggregateWindow(every: 1h, fn: mean, createEmpty: false)
+    '''
+    try:
+        tables = query_api.query(query)
+        forecast_data = []
+        for table in tables:
+            for record in table.records:
+                forecast_data.append({"time": record.get_time(), "power": record.get_value()})
+        
+        if len(forecast_data) < 4:
+            logger.warning("Not enough forecast data for optimal window finder.")
+            return
+
+        max_yield = 0
+        best_start_time = None
+        
+        for i in range(len(forecast_data) - 3):
+            current_yield = sum(forecast_data[j]["power"] for j in range(i, i+4))
+            if current_yield > max_yield:
+                max_yield = current_yield
+                best_start_time = forecast_data[i]["time"]
+        
+        if best_start_time:
+            window = {
+                "start_time": best_start_time.isoformat() if hasattr(best_start_time, 'isoformat') else str(best_start_time),
+                "end_time": ((best_start_time + timedelta(hours=4)).isoformat()) if hasattr(best_start_time, 'isoformat') else str(best_start_time),
+                "predicted_yield_wh": round(max_yield, 2)
+            }
+            state["eva"]["last_optimal_window"] = window
+            mqtt_client.publish("solar/eva/optimal_window", json.dumps(window), retain=True)
+            logger.info(f"Optimal window found: {best_start_time}")
+            save_state()
+    except Exception as e:
+        logger.error(f"Error in optimal window finder: {e}")
 
 # Section D: Smart Lockout (EVA-Aware)
 def lock_appliances():
@@ -323,11 +360,35 @@ def unlock_all_appliances():
 
 # Section E: Pattern Learning
 def eva_pattern_learning():
-    logger.info("EVA: Learning energy patterns...")
-    # Simulated learning for now, updates internal state
-    for node_id in state["eva"]["nodes"]:
-        state["eva"]["patterns"][node_id] = {"avg_w": 100, "confidence": 0.8}
-    save_state()
+    logger.info("EVA: Learning energy patterns from InfluxDB...")
+    if not influx_client: return
+    
+    query_api = influx_client.query_api()
+    query = f'''
+    from(bucket: "{INFLUXDB_BUCKET_EVA_NODES}")
+      |> range(start: -7d)
+      |> filter(fn: (r) => r["_measurement"] == "eva_nodes")
+      |> filter(fn: (r) => r["_field"] == "power_w")
+      |> group(columns: ["node_id"])
+      |> mean()
+    '''
+    try:
+        tables = query_api.query(query)
+        for table in tables:
+            for record in table.records:
+                node_id = record.values.get("node_id")
+                mean_power = record.get_value()
+                state["eva"]["patterns"][node_id] = {
+                    "avg_w": round(mean_power, 2),
+                    "confidence": 0.85,
+                    "last_learned": datetime.now().isoformat()
+                }
+                point = Point("eva_patterns").tag("node_id", node_id).field("avg_w", float(mean_power))
+                write_api.write(bucket=INFLUXDB_BUCKET_EVA_PATTERNS, record=point)
+        logger.info("EVA: Pattern learning complete.")
+        save_state()
+    except Exception as e:
+        logger.error(f"Error in pattern learning: {e}")
 
 # Section F: Map Snapshot
 def eva_publish_map():
@@ -353,6 +414,8 @@ def handle_eva_node_update(node_id, data_type, payload):
 def handle_eva_command(payload):
     if payload == "EVA_PHANTOM_CUT": eva_phantom_cut()
     elif payload == "EVA_PUBLISH_MAP": eva_publish_map()
+    elif payload == "EVA_OPTIMIZE": eva_optimal_window_finder()
+    elif payload == "EVA_LEARN": eva_pattern_learning()
 
 # Section H: Schedule
 def setup_eva_schedule():

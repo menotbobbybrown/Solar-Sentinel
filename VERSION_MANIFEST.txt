@@ -1,19 +1,17 @@
 Solar-Sentinel-AIO Version Manifest
-Phase 5: EVA Energy Map
+Phase 5: EVA Energy Map (Gemini API Transition)
 
 EVA Features:
 - Energy Visual Analytics (EVA) Registry
 - Phantom Load Detection & Auto-Cut
 - Optimal Energy Window Finder
-- Pattern Learning Engine (learned behavior)
+- Pattern Learning Engine (InfluxDB queries)
 - Real-time Energy Map (MQTT/Node-RED/Grafana)
 
 Components:
-- ollama: 0.1.27
-- hermes-3-llama3.1:8b-q4_K_M
-- langchain: 0.1.6
-- langchain-community: 0.0.19
-- langchain-core: 0.1.23
+- Gemini API (google-generativeai==0.4.1)
+- Hermes Agent: Gemini Pro with 12 Native Tools
+- EVA Map Visualizer (Node-RED)
 
 Core Services (Pinned Versions):
 - homeassistant: 2024.2.1
@@ -28,3 +26,6 @@ Python Dependencies:
 - pvlib: 0.10.3
 - paho-mqtt: 1.6.1
 - influxdb-client: 3.0.0
+- google-generativeai: 0.4.1
+- schedule: 1.2.1
+- requests: 2.31.0

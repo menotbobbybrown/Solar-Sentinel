@@ -52,16 +52,11 @@ RUN apk add --no-cache \
     smartmontools=7.4-r0 \
     git=2.43.5-r0
 
-# Install Ollama v0.1.27
-ARG OLLAMA_VERSION=0.1.27
-RUN curl -L https://github.com/ollama/ollama/releases/download/v${OLLAMA_VERSION}/ollama-linux-amd64 -o /usr/local/bin/ollama \
-    && chmod +x /usr/local/bin/ollama
-
 # Create non-root user
 RUN addgroup -S solar && adduser -S solar -G solar
 
 # Create necessary directories
-RUN mkdir -p /var/log/supervisor /etc/supervisor/conf.d /data /config /var/lib/influxdb2 /var/lib/grafana /mosquitto/data /mosquitto/log /data/ollama/models
+RUN mkdir -p /var/log/supervisor /etc/supervisor/conf.d /data /config /var/lib/influxdb2 /var/lib/grafana /mosquitto/data /mosquitto/log
 
 # Copy requirements.txt and install
 COPY requirements.txt /tmp/requirements.txt

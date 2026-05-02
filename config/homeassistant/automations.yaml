@@ -183,3 +183,18 @@
         title: "Optimal Energy Window"
         message: "Best time to use power: {{ value_json.start }}:00 - {{ value_json.end }}:00 on {{ value_json.date }}"
         notification_id: "eva_optimal_window"
+
+- id: eva_pattern_match
+  alias: "EVA: Pattern Match Found"
+  trigger:
+    - platform: mqtt
+      topic: "solar/alerts/guard"
+  condition:
+    - condition: template
+      value_template: "{{ 'Pattern' in value_json.message }}"
+  action:
+    - service: notify.persistent_notification
+      data:
+        title: "EVA: New Pattern Learned"
+        message: "{{ value_json.message }}"
+        notification_id: "eva_pattern_alert"

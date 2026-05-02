@@ -916,7 +916,7 @@
       "type": "stat",
       "targets": [
         {
-          "query": "from(bucket: \"eva_patterns\") |> range(start: -24h) |> filter(fn: (r) => r._field == \"avg_daily_wh\") |> mean()",
+          "query": "from(bucket: \"eva_patterns\") |> range(start: -24h) |> filter(fn: (r) => r._field == \"avg_w\") |> mean()",
           "refId": "A"
         }
       ]

@@ -19,7 +19,6 @@ DIRS=(
     "/data/logs"
     "/data/backups"
     "/data/agent"
-    "/data/ollama/models"
     "/data/guard"
 )
 
@@ -94,24 +93,6 @@ if [ -f "/data/agent/hermes_agent.py" ]; then
     chmod +x /data/agent/hermes_agent.py
 fi
 
-# Ollama model pull (idempotent) with version check
-if [ ! -d "/data/ollama/models/blobs" ]; then
-    echo "Pulling Ollama model hermes-3-llama3.1:8b-q4_K_M..."
-    OLLAMA_MODELS=/data/ollama/models /usr/local/bin/ollama serve &
-    OLLAMA_PID=$!
-    # Wait for Ollama to start
-    for i in {1..30}; do
-        if curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
-            echo "Ollama started successfully"
-            break
-        fi
-        echo "Waiting for Ollama to start... ($i/30)"
-        sleep 2
-    done
-    OLLAMA_MODELS=/data/ollama/models /usr/local/bin/ollama pull hermes-3-llama3.1:8b-q4_K_M || echo "Warning: Failed to pull Ollama model"
-    kill $OLLAMA_PID 2>/dev/null || true
-fi
-
 # InfluxDB bucket initialization
 echo "Checking InfluxDB buckets..."
 INFLUX_READY=0
@@ -154,6 +135,13 @@ fi
 if [ ! -d "/data/influxdb/engine" ]; then
     mkdir -p /data/influxdb/engine
     chown solar:solar /data/influxdb/engine
+fi
+
+# Check for Gemini API Key
+if [ -z "$GOOGLE_API_KEY" ]; then
+    echo "WARNING: GOOGLE_API_KEY is not set. Hermes AI agent will not function correctly."
+else
+    echo "GOOGLE_API_KEY is set."
 fi
 
 echo "Setup complete."
